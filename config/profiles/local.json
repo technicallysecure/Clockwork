@@ -1,0 +1,11 @@
+{
+  "id": "local",
+  "label": "General · Local",
+  "instructions": "Help the owner think, plan, and follow through. Be concise and specific.",
+  "provider": "lmstudio",
+  "model": "$CLOCKWORK_LM_MODEL",
+  "baseUrl": "$CLOCKWORK_LM_BASE_URL",
+  "nativeTools": "$CLOCKWORK_LM_TOOLS",
+  "scope": "personal",
+  "tools": ["list_commitments"]
+}
