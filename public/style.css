@@ -178,6 +178,35 @@ dialog form>label, #tool-inputs label { margin-top: .85rem; }
 dialog details { margin-top: .4rem; font-size: .88rem; color: var(--muted); }
 #job-profile { margin-top: .7rem; }
 .mobile-only { display: none !important; }
+.agent-picker { margin: 2rem .5rem .5rem; }
+.agent-picker label { color: #cad7cf; font-size: .85rem; }
+.agent-picker + nav { margin-top: .7rem; }
+.rail nav button[data-view="agents"] { margin-bottom: .65rem; }
+.view-title { min-width: 0; }
+#current-agent { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: min(35vw, 33rem); }
+#agent-goal { max-width: 42rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.action-group { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
+.agent-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(17rem,100%),1fr)); gap: .75rem; }
+.agent-card { display: flex; flex-direction: column; min-width: 0; padding: 1.05rem; background: var(--white); border: 1px solid var(--line); border-radius: .8rem; }
+.agent-card.current { border-color: #91a598; }
+.agent-card .record-head { align-items: center; }
+.agent-card h3 { font-size: 1.09rem; min-width: 0; overflow-wrap: anywhere; }
+.agent-card .saved-text { font-size: .92rem; color: var(--muted); margin: .6rem 0 .8rem; }
+.agent-card .row-actions { margin-top: auto; }
+#slot-info { margin-top: .8rem; }
+.panel-form { max-width: 40rem; margin-top: 1.3rem; }
+.panel-form > label, .panel-form > div > label { margin-top: .95rem; }
+.panel-form h3 { margin-top: 1.8rem; padding-top: 1.3rem; border-top: 1px solid var(--line); font-size: 1.12rem; }
+.recipient-set { border: none; padding: 0; margin: 0; }
+.recipient-set legend { font-size: .92rem; font-weight: 600; }
+#recipients { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .45rem; }
+.check-line { display: flex; gap: .55rem; align-items: center; cursor: pointer; font-weight: 500; overflow-wrap: anywhere; }
+.check-line input { width: 1.1rem; height: 1.1rem; min-height: 0; flex: none; accent-color: var(--forest); }
+#recipients label { margin: 0; padding: .55rem .7rem; border: 1px solid var(--line); border-radius: .55rem; background: var(--white); }
+#dispatch-results { margin-top: 1.5rem; }
+#confirm-copy { max-height: 52dvh; overflow: auto; }
+#settings-status, #file-status { margin-bottom: .75rem; }
+#file-dialog { max-width: min(42rem, calc(100vw - 1.5rem)); }
 @media (min-width: 1600px) { .workspace { grid-template-columns: 16.5rem minmax(0,1fr); } }
 @media (max-width: 850px) and (min-width: 761px) { .workspace { grid-template-columns: 12.75rem minmax(0,1fr); } }
 @media (max-width: 760px) {

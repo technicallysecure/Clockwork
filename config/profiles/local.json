@@ -7,5 +7,5 @@
   "baseUrl": "$CLOCKWORK_LM_BASE_URL",
   "nativeTools": "$CLOCKWORK_LM_TOOLS",
   "scope": "personal",
-  "tools": ["list_commitments"]
+  "tools": ["list_commitments", "list_workspace", "read_workspace"]
 }

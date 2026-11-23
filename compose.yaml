@@ -1,42 +1,97 @@
+# Docker Desktop runs one owner-facing gateway and one runtime per agent.
+x-runtime: &runtime
+  image: ${COMPOSE_PROJECT_NAME:-clockwork}-runtime:local
+  pull_policy: never
+  init: true
+  restart: unless-stopped
+  stop_grace_period: 75s
+  read_only: true
+  tmpfs:
+    - /tmp:rw,nosuid,nodev,noexec,size=32m
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  healthcheck:
+    test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+    interval: 30s
+    timeout: 5s
+    retries: 3
+    start_period: 5s
+
+x-worker-env: &worker-env
+  CLOCKWORK_ROLE: worker
+  CLOCKWORK_AGENT_RESERVED: "true"
+  CLOCKWORK_WORKSPACE: /workspace
+  CLOCKWORK_LOCAL_ONLY: ${CLOCKWORK_LOCAL_ONLY:-true}
+  CLOCKWORK_DEFAULT_PROFILE: ${CLOCKWORK_DEFAULT_PROFILE:-local}
+  CLOCKWORK_LM_BASE_URL: ${CLOCKWORK_LM_BASE_URL:-http://host.docker.internal:1234/v1}
+  CLOCKWORK_LM_MODEL: ${CLOCKWORK_LM_MODEL:-local-model}
+  CLOCKWORK_LM_TOOLS: ${CLOCKWORK_LM_TOOLS:-false}
+  CLOCKWORK_OPENAI_MODEL: ${CLOCKWORK_OPENAI_MODEL:-gpt-4.1-mini}
+  CLOCKWORK_OPENAI_TOOLS: ${CLOCKWORK_OPENAI_TOOLS:-}
+
 services:
-  clockwork:
-    build: .
-    init: true
-    restart: unless-stopped
-    stop_grace_period: 75s
+  gateway:
+    <<: *runtime
     ports:
       - "127.0.0.1:${CLOCKWORK_HOST_PORT:-8787}:8787"
     environment:
+      CLOCKWORK_ROLE: gateway
       CLOCKWORK_PASSWORD_FILE: /run/secrets/owner_password
+      CLOCKWORK_AGENT_SLOTS: personal,agent-2,agent-3
+      CLOCKWORK_SECURE_COOKIE: ${CLOCKWORK_SECURE_COOKIE:-false}
+    depends_on: [clockwork, worker-agent-2, worker-agent-3]
+    networks: [personal, agent-2, agent-3]
+    secrets: [owner_password, worker_personal, worker_agent-2, worker_agent-3]
+
+  # Keep the original service and volume names when upgrading a single-owner installation.
+  clockwork:
+    <<: *runtime
+    build: .
+    environment:
+      <<: *worker-env
+      CLOCKWORK_AGENT_ID: personal
+      CLOCKWORK_AGENT_RESERVED: "false"
+      CLOCKWORK_WORKER_TOKEN_FILE: /run/secrets/worker_personal
       LM_STUDIO_API_KEY_FILE: /run/secrets/lm_token
       OPENAI_API_KEY_FILE: /run/secrets/openai_key
-      CLOCKWORK_LOCAL_ONLY: ${CLOCKWORK_LOCAL_ONLY:-true}
-      CLOCKWORK_DEFAULT_PROFILE: ${CLOCKWORK_DEFAULT_PROFILE:-local}
-      CLOCKWORK_LM_BASE_URL: ${CLOCKWORK_LM_BASE_URL:-http://host.docker.internal:1234/v1}
-      CLOCKWORK_LM_MODEL: ${CLOCKWORK_LM_MODEL:-local-model}
-      CLOCKWORK_LM_TOOLS: ${CLOCKWORK_LM_TOOLS:-false}
-      CLOCKWORK_OPENAI_MODEL: ${CLOCKWORK_OPENAI_MODEL:-gpt-4.1-mini}
-      CLOCKWORK_OPENAI_TOOLS: ${CLOCKWORK_OPENAI_TOOLS:-}
-      CLOCKWORK_SECURE_COOKIE: ${CLOCKWORK_SECURE_COOKIE:-false}
-    secrets:
-      - owner_password
-      - lm_token
-      - openai_key
+    secrets: [worker_personal, lm_token, openai_key]
+    networks:
+      personal:
+        aliases: [worker-personal]
     volumes:
       - clockwork_data:/data
+      - personal_workspace:/workspace
       - ./config:/app/config:ro
       - ./extensions:/app/extensions:ro
-    read_only: true
-    tmpfs:
-      - /tmp:rw,nosuid,nodev,noexec,size=32m
-    cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
+
+  worker-agent-2:
+    <<: *runtime
+    environment:
+      <<: *worker-env
+      CLOCKWORK_AGENT_ID: agent-2
+      CLOCKWORK_WORKER_TOKEN_FILE: /run/secrets/worker_agent-2
+    secrets: [worker_agent-2]
+    networks: [agent-2]
+    volumes:
+      - agent-2_data:/data
+      - agent-2_workspace:/workspace
+      - ./config:/app/config:ro
+      - ./extensions:/app/extensions:ro
+
+  worker-agent-3:
+    <<: *runtime
+    environment:
+      <<: *worker-env
+      CLOCKWORK_AGENT_ID: agent-3
+      CLOCKWORK_WORKER_TOKEN_FILE: /run/secrets/worker_agent-3
+    secrets: [worker_agent-3]
+    networks: [agent-3]
+    volumes:
+      - agent-3_data:/data
+      - agent-3_workspace:/workspace
+      - ./config:/app/config:ro
+      - ./extensions:/app/extensions:ro
+
 secrets:
   owner_password:
     file: ./.secrets/owner_password
@@ -44,5 +99,20 @@ secrets:
     file: ./.secrets/lm_token
   openai_key:
     file: ./.secrets/openai_key
+  worker_personal:
+    file: ./.secrets/worker_personal
+  worker_agent-2:
+    file: ./.secrets/worker_agent-2
+  worker_agent-3:
+    file: ./.secrets/worker_agent-3
 volumes:
   clockwork_data:
+  personal_workspace:
+  agent-2_data:
+  agent-2_workspace:
+  agent-3_data:
+  agent-3_workspace:
+networks:
+  personal:
+  agent-2:
+  agent-3:

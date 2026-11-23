@@ -91,6 +91,10 @@ function secret(env, name) {
   }
 }
 
+export function deploymentCredential(env, provider) {
+  return secret(env, provider === 'lmstudio' ? 'LM_STUDIO_API_KEY' : 'OPENAI_API_KEY');
+}
+
 function parseReply(raw, toolNames) {
   if (typeof raw !== 'string' || Buffer.byteLength(raw) > MAX_RESPONSE) throw failure('Invalid provider response.');
   let msg;
@@ -125,12 +129,12 @@ function parseReply(raw, toolNames) {
   return {text, calls};
 }
 
-export function createProvider({config, env = process.env, fetchImpl}) {
+export function createProvider({config, env = process.env, fetchImpl, credentialFor = profile => deploymentCredential(env, profile.provider)}) {
   return {
     async complete(profile, messages, tools = [], {signal} = {}) {
       const url = providerEndpoint(profile, config.localOnly);
       const local = profile.provider === 'lmstudio';
-      const token = secret(env, local ? 'LM_STUDIO_API_KEY' : 'OPENAI_API_KEY');
+      const token = credentialFor(profile);
       if (!local && !token) throw failure('Configure the OpenAI API key to use hosted inference.');
       const headers = {'Content-Type': 'application/json'};
       if (token) headers.Authorization = 'Bearer ' + token;
