@@ -38,7 +38,7 @@ docker compose exec clockwork node -e "fetch(process.env.CLOCKWORK_LM_BASE_URL+'
 
 ### Search the web
 
-For public web research, type **Search the web for RFC 9309** or `/search RFC 9309` in ordinary chat. You can also use **Web search** below the message box. Each agent searches through its own SearXNG service using DuckDuckGo and Mwmbl. Search needs no separate API key and works with native tool calling off. If search is available but off for your profile, choose **Enable web search** below the message box. Results include source links, even if the selected model is offline. [Setup, privacy and verification](docs/web-search.md)
+For automatic research, open **Agent settings → Web search**, allow web search for the profile, and check **Automatically search during chat**. Ask an ordinary question such as “What is the latest stable Python release?” The selected model can choose to search with native tool calling off. The transcript shows the terms and numbered sources. You can also submit exact terms with `/search RFC 9309` or the **Web search** form. Each agent uses its own SearXNG service with DuckDuckGo and Mwmbl. Search needs no separate API key. [Setup, privacy and verification](docs/web-search.md)
 
 ### Enable hosted inference
 

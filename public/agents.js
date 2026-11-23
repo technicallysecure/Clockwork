@@ -340,6 +340,8 @@ function settingsProfileChanged() {
   const search = $('#settings-search');
   search.disabled = !profile.webSearchAvailable;
   search.checked = !search.disabled && profile.webSearchEnabled === true;
+  $('#settings-auto-search').checked = profile.autoWebSearchEnabled === true;
+  searchPermissionChanged();
   const policy = $('#settings-search-policy');
   if (loadedSettings.localOnly) policy.textContent = 'Local-only mode disables internet search for this worker.';
   else if (!loadedSettings.webSearchAvailable) policy.textContent = 'The deployment operator can enable the search service for this worker with the search Compose configuration.';
@@ -350,6 +352,12 @@ function settingsProfileChanged() {
   $('#credential-mode').value = 'keep';
   credentialChanged();
   if (plan) loadPlan();
+}
+
+function searchPermissionChanged() {
+  const automatic = $('#settings-auto-search');
+  automatic.disabled = !$('#settings-search').checked;
+  if (automatic.disabled) automatic.checked = false;
 }
 
 function contextDescription(profile) {
@@ -519,6 +527,7 @@ function credentialChanged() {
 }
 
 $('#settings-profile').addEventListener('change', settingsProfileChanged);
+$('#settings-search').addEventListener('change', searchPermissionChanged);
 $('#settings-model').addEventListener('input', () => { $('#settings-tools').checked = false; });
 $('#settings-url').addEventListener('input', credentialChanged);
 $('#credential-mode').addEventListener('change', credentialChanged);
@@ -534,7 +543,10 @@ $('#settings-form').addEventListener('submit', event => {
   const body = {revision:original.revision, profileId:profile.id,
     name:$('#settings-name').value.trim(), goal:$('#settings-goal').value.trim(), model:plan ? $('#plan-model').value : $('#settings-model').value.trim(),
     baseUrl:plan ? profile.baseUrl : $('#settings-url').value.trim(), nativeTools:$('#settings-tools').checked};
-  if (profile.webSearchAvailable) body.webSearchEnabled = $('#settings-search').checked;
+  if (profile.webSearchAvailable) {
+    body.webSearchEnabled = $('#settings-search').checked;
+    body.autoWebSearchEnabled = body.webSearchEnabled && $('#settings-auto-search').checked;
+  }
   const mode = $('#credential-mode').value;
   const endpoint = URL.parse(body.baseUrl);
   if (!endpoint || !['http:','https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
@@ -544,6 +556,8 @@ $('#settings-form').addEventListener('submit', event => {
   const copy = 'Save settings for ' + body.name + ' and use ' + providerLabel(profile.provider) + ' (' + body.model + ') at ' + body.baseUrl + '. ' + contextDescription(profile) +
     (body.webSearchEnabled !== undefined && body.webSearchEnabled !== profile.webSearchEnabled
       ? '\n\n' + (body.webSearchEnabled ? 'Enable web search for this profile.' : 'Disable web search for this profile.') : '') +
+    (body.autoWebSearchEnabled !== undefined && body.autoWebSearchEnabled !== profile.autoWebSearchEnabled
+      ? '\n\n' + (body.autoWebSearchEnabled ? 'Allow this agent to send public search terms from the current message when it needs sources.' : 'Turn off automatic web search during chat.') : '') +
     (mode === 'keep' ? '' : '\n\n' + (mode === 'clear' ? 'Clear' : 'Replace') + ' the credential for that destination.');
   confirmAction('Apply agent settings?', copy, 'Save settings', false, async dialog => {
     if (epoch !== agentEpoch || loadedSettings !== original) return;

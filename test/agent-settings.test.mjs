@@ -62,6 +62,42 @@ test('legacy records remain accessible only to the personal agent during adoptio
   assert.deepEqual(runtime.state().commitments.map(c=>c.text), ['Legacy appointment']);
 });
 
+test('automatic search needs its own opt-in for each profile and plan registration', async t => {
+  const db = openStore(':memory:');
+  t.after(() => db.close());
+  const env = {CLOCKWORK_LOCAL_ONLY:'false', CLOCKWORK_WEB_SEARCH:'true'};
+  let account = 'plan-one';
+  const planAuth = {status:() => ({activeId:account})};
+  let runtime = await createRuntime({db,root,env,planAuth});
+  const save = patch => runtime.updateSettings(changes(runtime, patch));
+  assert.throws(() => save({profileId:'plan',autoWebSearchEnabled:true}), {status:400});
+  assert.throws(() => save({profileId:'plan',webSearchEnabled:true,autoWebSearchEnabled:'false'}), {status:400});
+  save({profileId:'plan',webSearchEnabled:true});
+  assert.equal(runtime.active().autoWebSearchEnabled, false, 'existing manual permission alone');
+  save({autoWebSearchEnabled:true});
+  save({model:'another-model'}); // Older clients may omit both search settings.
+  runtime = await createRuntime({db,root,env,planAuth});
+  assert.equal(runtime.settings().profiles.find(p => p.id === 'plan').autoWebSearchEnabled, true);
+  assert.equal(runtime.getProfile('hosted').autoWebSearchEnabled, false);
+  account = 'plan-two';
+  assert.equal(runtime.active().webSearchEnabled, false);
+  save({webSearchEnabled:true});
+  assert.equal(runtime.active().autoWebSearchEnabled, false);
+  account = 'plan-one';
+  assert.equal(runtime.active().autoWebSearchEnabled, true);
+  save({webSearchEnabled:false});
+  save({webSearchEnabled:true});
+  assert.equal(runtime.active().autoWebSearchEnabled, false, 'manual re-enable must not restore an earlier automatic grant');
+
+  save({profileId:'local',webSearchEnabled:true,autoWebSearchEnabled:true});
+  for (const ceiling of [{CLOCKWORK_LOCAL_ONLY:'true'}, {CLOCKWORK_WEB_SEARCH:'false'}]) {
+    runtime = await createRuntime({db,root,env:{...env,...ceiling},planAuth});
+    assert.equal(runtime.active().autoWebSearchEnabled, false);
+    assert.throws(() => save({webSearchEnabled:true,autoWebSearchEnabled:true}), {status:400});
+    assert.throws(() => save({autoWebSearchEnabled:true}), {status:400});
+  }
+});
+
 test('settings changes apply to the actual next inference, persist after restart and bind keys to destinations', async t => {
   const first = await recorder(t);
   const second = await recorder(t);

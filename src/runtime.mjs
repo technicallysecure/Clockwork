@@ -9,6 +9,7 @@ import { createAssignmentRunner } from './assignments.mjs';
 import { createWorkspace, workspaceTools } from './workspace.mjs';
 import { memoryScope } from './context.mjs';
 import { chatSearchTerms, createWebResearch, searchHelp } from './web-research.mjs';
+import { decideWebSearch } from './auto-web-search.mjs';
 
 const explicitCommand = /^\/(remember|commit)(?:\s+([\s\S]*))?$/i;
 const systemRules = [
@@ -63,7 +64,7 @@ function inferenceHistory(notebook, profile, goal, config) {
     open_commitments: contextEntries(notebook.memories(scope, 'commitment').filter(row => !row.done)),
   };
   return [
-    { role: 'system', content: `${systemRules}\n${searchHelp(profile, config)} The owner starts searches directly in Clockwork. For a request that needs web evidence, explain how to start a search.\n\nOwner-configured agent goal:\n${goal}\n\nProfile instructions:\n${profile.instructions}` },
+    { role: 'system', content: `${systemRules}\n${searchHelp(profile, config)} This reply has no fresh search results. Never claim to have looked something up without evidence.\n\nOwner-configured agent goal:\n${goal}\n\nProfile instructions:\n${profile.instructions}` },
     ...recent,
     { role: 'user', content: JSON.stringify({saved_context:context, owner_request:current.content}) },
   ];
@@ -165,12 +166,22 @@ export async function createRuntime({ db, root, env = process.env, config = load
       return help;
     }
     chatting = true;
+    let origin = 'chat';
     try {
-      notebook.append(profile, 'user', text);
+      const messageId = notebook.append(profile, 'user', text);
+      const signal = AbortSignal.timeout(60000);
+      if (profile.autoWebSearchEnabled) {
+        const query = await decideWebSearch({profile, text, provider:inference, signal});
+        signal.throwIfAborted();
+        if (query !== null) {
+          origin = 'web';
+          return await research.runSearch(profile, query, capabilities, completeTurn, signal,
+            {ownerMessage:text, automaticMessageId:messageId});
+        }
+      }
       const messages = inferenceHistory(notebook, profile, agentSettings.goalFor(profile), config);
       const tools = profile.nativeTools ? capabilities.list(profile).filter(tool => !tool.ownerInputOnly) : [];
       const allowedTools = tools.map(tool => tool.name);
-      const signal = AbortSignal.timeout(60000);
       const content = await completeTurn(profile, messages, tools, signal, (name, args) =>
         capabilities.dispatch(profile, name, args, {allowedTools, signal}));
       notebook.append(profile, 'assistant', content);
@@ -178,7 +189,7 @@ export async function createRuntime({ db, root, env = process.env, config = load
     } catch (error) {
       // Only the adapter's sanitized diagnostic may cross the HTTP boundary.
       const detail = error.status && error.status >= 400 && error.status < 600 ? error.message : 'Could not reach the selected model. Check its endpoint, model ID and credential.';
-      notebook.append(profile, 'error', detail);
+      notebook.append(profile, 'error', detail, origin);
       throw badRequest(detail, error.status === 504 || error.name === 'TimeoutError' ? 504 : 502);
     } finally {
       chatting = false;
@@ -237,7 +248,7 @@ export async function createRuntime({ db, root, env = process.env, config = load
   }
 
   function searchWeb(query, ownerMessage) {
-    return researchTurn((profile, signal) => research.runSearch(profile, query, capabilities, completeTurn, signal, ownerMessage));
+    return researchTurn((profile, signal) => research.runSearch(profile, query, capabilities, completeTurn, signal, {ownerMessage}));
   }
 
   function state() {
@@ -253,6 +264,7 @@ export async function createRuntime({ db, root, env = process.env, config = load
       })),
       activeProfile: profile.id, localOnly: config.localOnly, chatting,
       webSearchAvailable:profile.webSearchAvailable, webSearchEnabled:profile.webSearchEnabled,
+      autoWebSearchEnabled:profile.autoWebSearchEnabled,
       webSourceReadEnabled:profile.webSearchEnabled && capabilities.list(profile, ['read_web_source']).length > 0,
       messages: messages.slice(-100), hasEarlier: messages.length > 100,
       preferences: notebook.memories(scope, 'preference'), commitments: notebook.memories(scope, 'commitment'),

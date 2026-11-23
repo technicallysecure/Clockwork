@@ -52,9 +52,11 @@ export function openStore(filename) {
     CREATE INDEX IF NOT EXISTS memories_scope_kind ON memories(scope,kind);
   `);
   transaction(db, () => {
-    if (!db.prepare('PRAGMA table_info(messages)').all().some(column => column.name === 'origin')) {
+    const columns = db.prepare('PRAGMA table_info(messages)').all().map(column => column.name);
+    if (!columns.includes('origin')) {
       db.exec("ALTER TABLE messages ADD COLUMN origin TEXT NOT NULL DEFAULT 'chat'");
     }
+    if (!columns.includes('searchQuery')) db.exec('ALTER TABLE messages ADD COLUMN searchQuery TEXT');
   });
   return db;
 }
@@ -94,11 +96,12 @@ export class Notebook {
   }
 
   messages(scope, limit, before = Number.MAX_SAFE_INTEGER, chatOnly = false) {
-    const rows = this.db.prepare(`SELECT id,role,content,profileId,createdAt,origin FROM messages
+    const rows = this.db.prepare(`SELECT id,role,content,profileId,createdAt,origin,searchQuery FROM messages
       WHERE scope=? AND id<? ${chatOnly ? "AND origin='chat'" : ''} ORDER BY id DESC LIMIT ?`).all(scope, before, limit).reverse();
     const sources = this.db.prepare('SELECT id,title,url,snippet FROM web_sources WHERE messageId=? ORDER BY position');
     for (const row of rows) {
       if (row.origin === 'web' && row.role === 'assistant') row.sources = sources.all(row.id);
+      if (row.searchQuery === null) delete row.searchQuery;
       delete row.origin;
     }
     return rows;

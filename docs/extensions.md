@@ -7,11 +7,14 @@
 | Inference | Chat Completions, storage disabled | Chat Completions at a trusted private endpoint | Public Responses API with storage disabled and SSE through completion |
 | Model selection | Configured model ID | Configured loaded model ID | Visible models from the active registration's live catalog |
 | Tools | Native functions for supported models | Off by default, depends on model and template | Opt-in, namespaced application functions and stateless result replay |
+| Automatic conversation search | Optional text decision using the selected API model | Optional text decision when the deployment permits network tools | Optional text decision using the selected plan model and registration |
 | Provider context | API-key profile and scope | Local profile and scope | Plan profile, scope and account/workspace registration |
 | Credentials | Agent-specific API key | Optional token | Renewable OAuth grant in a dedicated protected store |
 | Errors | Selected provider error | Selected provider error | Consent, eligibility, capability, limits and terminal stream errors stop the turn |
 
 All three use the worker's SQLite store, scheduler, approvals and inbox. Clockwork uses text input and output. Structured output formats and hosted tools are outside this integration. [Plan route setup and limitations](chatgpt-plan.md)
+
+Automatic search uses a separate text decision and works with native tool calling off. The worker validates each proposed query before dispatching the search. [Web search settings and privacy](web-search.md)
 
 Both providers document the Chat Completions endpoint. OpenAI lists function calling for GPT‑4.1 mini. LM Studio documents variation in tool support among models and templates. Clockwork sends tools only when the selected profile enables native calls. It executes validated native requests through the registry. Prose, including JSON-looking prose, stays in the conversation. [OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create) · [GPT‑4.1 mini](https://developers.openai.com/api/docs/models/gpt-4.1-mini) · [LM Studio compatibility](https://lmstudio.ai/docs/developer/openai-compat) · [LM Studio tool use](https://lmstudio.ai/docs/developer/openai-compat/tools)
 
