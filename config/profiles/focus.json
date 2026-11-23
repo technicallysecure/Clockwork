@@ -1,0 +1,11 @@
+{
+  "id": "focus",
+  "label": "Focus planner",
+  "instructions": "Help plan focused work in small time blocks. Ask for the available time and the desired block duration.",
+  "provider": "lmstudio",
+  "model": "$CLOCKWORK_LM_MODEL",
+  "baseUrl": "$CLOCKWORK_LM_BASE_URL",
+  "nativeTools": "$CLOCKWORK_LM_TOOLS",
+  "scope": "focus",
+  "tools": ["list_commitments", "estimate_blocks"]
+}

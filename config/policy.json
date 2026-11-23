@@ -1,0 +1,20 @@
+{
+  "extensions": ["estimate-blocks.mjs"],
+  "grants": {
+    "local": {
+      "scope": "personal",
+      "tools": ["list_commitments"],
+      "permissions": ["commitments.read"]
+    },
+    "hosted": {
+      "scope": "personal",
+      "tools": ["list_commitments"],
+      "permissions": ["commitments.read"]
+    },
+    "focus": {
+      "scope": "focus",
+      "tools": ["list_commitments", "estimate_blocks"],
+      "permissions": ["commitments.read", "time.estimate"]
+    }
+  }
+}

@@ -1,0 +1,48 @@
+services:
+  clockwork:
+    build: .
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 75s
+    ports:
+      - "127.0.0.1:${CLOCKWORK_HOST_PORT:-8787}:8787"
+    environment:
+      CLOCKWORK_PASSWORD_FILE: /run/secrets/owner_password
+      LM_STUDIO_API_KEY_FILE: /run/secrets/lm_token
+      OPENAI_API_KEY_FILE: /run/secrets/openai_key
+      CLOCKWORK_LOCAL_ONLY: ${CLOCKWORK_LOCAL_ONLY:-true}
+      CLOCKWORK_DEFAULT_PROFILE: ${CLOCKWORK_DEFAULT_PROFILE:-local}
+      CLOCKWORK_LM_BASE_URL: ${CLOCKWORK_LM_BASE_URL:-http://host.docker.internal:1234/v1}
+      CLOCKWORK_LM_MODEL: ${CLOCKWORK_LM_MODEL:-local-model}
+      CLOCKWORK_LM_TOOLS: ${CLOCKWORK_LM_TOOLS:-false}
+      CLOCKWORK_OPENAI_MODEL: ${CLOCKWORK_OPENAI_MODEL:-gpt-4.1-mini}
+      CLOCKWORK_OPENAI_TOOLS: ${CLOCKWORK_OPENAI_TOOLS:-}
+      CLOCKWORK_SECURE_COOKIE: ${CLOCKWORK_SECURE_COOKIE:-false}
+    secrets:
+      - owner_password
+      - lm_token
+      - openai_key
+    volumes:
+      - clockwork_data:/data
+      - ./config:/app/config:ro
+      - ./extensions:/app/extensions:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=32m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+secrets:
+  owner_password:
+    file: ./.secrets/owner_password
+  lm_token:
+    file: ./.secrets/lm_token
+  openai_key:
+    file: ./.secrets/openai_key
+volumes:
+  clockwork_data:

@@ -1,0 +1,11 @@
+{
+  "id": "hosted",
+  "label": "General · Hosted",
+  "instructions": "Help the owner think, plan, and follow through. Be concise and specific.",
+  "provider": "openai",
+  "model": "$CLOCKWORK_OPENAI_MODEL",
+  "baseUrl": "https://api.openai.com/v1",
+  "nativeTools": "$CLOCKWORK_OPENAI_TOOLS",
+  "scope": "personal",
+  "tools": ["list_commitments"]
+}
