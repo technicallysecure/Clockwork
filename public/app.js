@@ -2,7 +2,7 @@
 
 const $ = (selector, parent = document) => parent.querySelector(selector);
 const $$ = (selector, parent = document) => [...parent.querySelectorAll(selector)];
-const labels = { chat: 'Conversation', memory: 'Memory', schedules: 'Follow-ups', inbox: 'Inbox' };
+const labels = { agents: 'Agents', chat: 'Conversation', memory: 'Memory', schedules: 'Follow-ups', inbox: 'Inbox', files: 'Workspace files', settings: 'Agent settings' };
 const providerLabel = (id) => ({ openai: 'OpenAI', lmstudio: 'LM Studio' }[id] || id);
 let state = null;
 let view = 'chat';
@@ -81,12 +81,13 @@ function setBusy(form, busy) {
   $$('button, input, textarea, select', form).forEach((input) => { input.disabled = busy; });
 }
 
-async function api(path, { method = 'GET', body, profile = state?.activeProfile } = {}) {
+async function requestJSON(path, { method = 'GET', body, profile, revision } = {}) {
   const headers = {};
   if (method !== 'GET') {
     headers['Content-Type'] = 'application/json';
     headers['X-Clockwork-Request'] = '1';
     if (profile) headers['X-Clockwork-Profile'] = profile;
+    if (Number.isInteger(revision)) headers['X-Clockwork-Revision'] = String(revision);
   }
   let response;
   try {
@@ -106,6 +107,15 @@ async function api(path, { method = 'GET', body, profile = state?.activeProfile 
   return data;
 }
 
+function workerRequest(id, path, options) {
+  if (!id || !path.startsWith('/')) throw new Error('Select an agent first.');
+  return requestJSON('/api/agents/' + encodeURIComponent(id) + path, options);
+}
+
+function api(path, options = {}) {
+  return workerRequest(selectedAgent, path, { profile: state?.activeProfile, revision: state?.settingsRevision, ...options });
+}
+
 function closeNav(restoreFocus = false) {
   const wasOpen = $('#rail').classList.contains('open');
   $('#rail').classList.remove('open');
@@ -117,27 +127,17 @@ function closeNav(restoreFocus = false) {
 
 function showLogin(message = '') {
   const wasOpen = !$('#login').hidden;
-  state = null;
-  refreshVersion++;
-  historyGeneration++;
-  rendered.clear();
+  clearAgentState();
+  selectedAgent = null;
+  directory = null;
+  directoryVersion++;
+  sessionStorage.removeItem('clockwork-agent');
   drafts.clear();
-  messages = [];
-  hasEarlier = false;
-  sending = false;
-  editingMemory = null;
-  jobProfile = null;
-  confirmation = null;
-  switchingTo = null;
   closeNav();
-  $$('dialog[open]').forEach((dialog) => dialog.close());
-  for (const id of ['transcript', 'memory-list', 'job-list', 'run-list', 'approval-list', 'notification-list']) {
-    document.getElementById(id).replaceChildren();
-  }
-  $('#message').value = '';
-  $('#memory-form').reset();
-  $('#job-form').reset();
-  $('#confirm-copy').textContent = '';
+  $('#agent-list').replaceChildren();
+  $('#recipients').replaceChildren();
+  $('#agent-picker').replaceChildren();
+  clearDispatch();
   $('#boot').hidden = true;
   $('#app').hidden = true;
   $('#login').hidden = false;
@@ -147,6 +147,7 @@ function showLogin(message = '') {
 }
 
 function go(next, focus = false) {
+  if (!state && next !== 'agents') next = 'agents';
   view = next;
   closeNav();
   Object.keys(labels).forEach((key) => { $('#view-' + key).hidden = key !== next; });
@@ -155,8 +156,13 @@ function go(next, focus = false) {
     else item.removeAttribute('aria-current');
   });
   $('#view-heading').textContent = labels[next];
-  document.title = labels[next] + ' · Clockwork';
+  document.title = [labels[next], next !== 'agents' && state?.agent?.name, 'Clockwork'].filter(Boolean).join(' · ');
+  $('#current-agent').textContent = next !== 'agents' ? state?.agent?.name || '' : '';
+  $('.provider').hidden = next === 'agents' || !state;
   render();
+  if (next === 'agents') renderDirectory();
+  if (next === 'files') loadFiles();
+  if (next === 'settings') loadSettings();
   if (focus) $('#view-heading').focus();
 }
 
@@ -177,21 +183,25 @@ function mergePage(latest, earlier) {
 }
 
 async function refresh({ report = true } = {}) {
+  if (!selectedAgent) return;
   const version = ++refreshVersion;
   try {
-    const data = await api('/api/state');
+    const data = await api('/state');
     if (version !== refreshVersion) return;
+    if (data.agent.id !== selectedAgent) throw new Error('Agent identity mismatch. Refresh the agent directory.');
     const prior = state;
-    if (!prior || prior.activeProfile !== data.activeProfile) {
+    if (!prior || prior.activeProfile !== data.activeProfile || prior.settingsRevision !== data.settingsRevision) {
       messages = [];
       historyGeneration++;
+      loadingHistory = false;
+      $('#older').disabled = false;
       rendered.clear();
       // A different tab can switch the active provider while a form is being edited.
       if (prior) {
-        drafts.set(prior.activeProfile, $('#message').value);
-        $('#message').value = drafts.get(data.activeProfile) || '';
+        drafts.set(draftKey(prior), $('#message').value);
+        $('#message').value = drafts.get(draftKey(data)) || '';
         $$('dialog[open]').forEach((dialog) => dialog.close());
-        if (data.activeProfile !== switchingTo) notice('The active profile changed. Check the provider before sending your next message.');
+        if (data.activeProfile !== switchingTo) notice('Agent settings changed. Review the provider before sending your next message.');
       }
     }
     state = data;
@@ -199,17 +209,26 @@ async function refresh({ report = true } = {}) {
     $('#boot').hidden = true;
     $('#login').hidden = true;
     $('#app').hidden = false;
-    if (!prior) go('chat');
+    if (!prior) {
+      $('#message').value = drafts.get(draftKey(data)) || '';
+      updateNavigation();
+      go('chat');
+    }
     else render();
+    if (prior && view === 'settings' && prior.settingsRevision !== data.settingsRevision) {
+      $('#settings-status').textContent = 'Agent settings changed. Reload to edit the latest version.';
+    }
     if (!prior) $('#message').focus();
   } catch (error) {
     if (version !== refreshVersion) return;
-    if (error.status === 401 || !state) showLogin(error.status === 401 ? '' : error.message);
+    if (error.status === 401) showLogin();
+    else if (!state) { go('agents'); notice(error.message); }
     else if (report) notice(error.message);
   }
 }
 
-async function mutate(path, body, { method = 'POST', profile = state?.activeProfile, dialog, button } = {}) {
+async function mutate(path, body, { method = 'POST', profile = state?.activeProfile, revision = state?.settingsRevision, dialog, button } = {}) {
+  const epoch = agentEpoch;
   if (button?.disabled) return false;
   if (button) button.disabled = true;
   const form = dialog?.querySelector('form');
@@ -219,21 +238,23 @@ async function mutate(path, body, { method = 'POST', profile = state?.activeProf
     showError($('.dialog-error', form), '');
   }
   try {
-    await api(path, { method, body, profile });
+    await api(path, { method, body, profile, revision });
+    if (epoch !== agentEpoch) return false;
     if (dialog?.open) dialog.close();
     notice('');
     await refresh();
-    return true;
+    return epoch === agentEpoch;
   } catch (error) {
+    if (epoch !== agentEpoch) return false;
     await refresh({ report: false });
-    if (state) {
+    if (epoch === agentEpoch && state) {
       if (dialog?.open) showError($('.dialog-error', dialog), error.message);
       else notice(error.message);
     }
     return false;
   } finally {
     if (button) button.disabled = false;
-    if (form) setBusy(form, false);
+    if (form && epoch === agentEpoch) setBusy(form, false);
   }
 }
 
@@ -315,10 +336,10 @@ function renderMemory() {
         if (preferences) {
           rowActions(row, action('Edit', 'secondary', () => openMemory('preference', item)),
             action('Remove', 'secondary', () => confirmAction('Remove preference?', item.text, 'Remove', true,
-              (dialog, profile) => mutate('/api/preferences/' + encodeURIComponent(item.id), undefined, { method: 'DELETE', dialog, profile }))));
+              (dialog, profile) => mutate('/preferences/' + encodeURIComponent(item.id), undefined, { method: 'DELETE', dialog, profile }))));
         } else {
           rowActions(row, action(item.done ? 'Reopen' : 'Mark complete', 'secondary', (e) =>
-            mutate('/api/commitments/' + encodeURIComponent(item.id), { done: !item.done }, { method: 'PATCH', button: e.currentTarget })));
+            mutate('/commitments/' + encodeURIComponent(item.id), { done: !item.done }, { method: 'PATCH', button: e.currentTarget })));
         }
         return row;
       });
@@ -340,7 +361,7 @@ function renderSchedules() {
     }
     if (job.status === 'active' || job.status === 'paused') {
       const transition = job.status === 'active' ? 'pause' : 'resume';
-      const path = '/api/jobs/' + encodeURIComponent(job.id) + '/';
+      const path = '/jobs/' + encodeURIComponent(job.id) + '/';
       rowActions(row, action(transition === 'pause' ? 'Pause' : 'Resume', 'secondary', (e) =>
         mutate(path + transition, {}, { button: e.currentTarget })),
       action('Cancel schedule', 'secondary', () => confirmAction('Cancel this schedule?', job.goal, 'Cancel schedule', true,
@@ -366,7 +387,7 @@ function renderInbox() {
       el('p', 'meta', 'Destination'), el('pre', '', reviewValue(approval.destination)),
       el('p', 'meta', 'Arguments'), el('pre', '', reviewValue(approval.args)));
     if (approval.status === 'pending') {
-      const path = '/api/approvals/' + encodeURIComponent(approval.id) + '/';
+      const path = '/approvals/' + encodeURIComponent(approval.id) + '/';
       rowActions(row, action('Approve action', 'primary', (e) => mutate(path + 'approve', {}, { button: e.currentTarget })),
         action('Reject', 'secondary', (e) => mutate(path + 'reject', {}, { button: e.currentTarget })));
     }
@@ -388,6 +409,8 @@ function reviewValue(value) {
 
 function render() {
   if (!state) return;
+  $('#current-agent').textContent = view === 'agents' ? '' : agentLabel(state.agent);
+  $('#agent-goal').textContent = state.agent.goal;
   changed('profiles', [state.profiles, state.activeProfile, state.localOnly], () => {
     const select = $('#profile');
     select.replaceChildren(...state.profiles.map((profile) => {
@@ -422,7 +445,7 @@ function showDialog(id) {
 }
 
 function confirmAction(title, copy, label, destructive, callback) {
-  const profile = state.activeProfile;
+  const profile = state?.activeProfile;
   confirmation = (dialog) => callback(dialog, profile);
   $('#confirm-title').textContent = title;
   $('#confirm-copy').textContent = copy;
@@ -459,7 +482,7 @@ function updateJobTool() {
 
 function openJob() {
   jobProfile = activeProfile();
-  jobRequestId = crypto.randomUUID();
+  jobRequestId = newRequestId();
   $('#job-form').reset();
   $('#job-time').value = localDateValue(new Date(Date.now() + 3600000));
   $('#job-zone').value = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
@@ -478,9 +501,9 @@ $('#login-form').addEventListener('submit', async (event) => {
   showError($('#login-error'), '');
   setBusy(form, true);
   try {
-    await api('/api/login', { method: 'POST', body: { password: $('#password').value } });
+    await requestJSON('/api/login', { method: 'POST', body: { password: $('#password').value } });
     $('#password').value = '';
-    await refresh();
+    await startSession();
   } catch (error) {
     showError($('#login-error'), error.message);
   } finally {
@@ -491,11 +514,10 @@ $('#login-form').addEventListener('submit', async (event) => {
 
 $('#logout').addEventListener('click', async () => {
   try {
-    await api('/api/logout', { method: 'POST', body: {} });
+    await requestJSON('/api/logout', { method: 'POST', body: {} });
     showLogin();
   } catch (error) {
-    await refresh({ report: false });
-    if (state) notice(error.message);
+    notice(error.message);
   }
 });
 
@@ -508,7 +530,7 @@ $('#profile').addEventListener('change', (event) => {
     ' scope to ' + principal + '. Existing follow-ups keep their scheduled profile.',
     'Switch to ' + next.label, false, async (dialog, profile) => {
       switchingTo = next.id;
-      try { await mutate('/api/profile', { id: next.id }, { dialog, profile }); }
+      try { await mutate('/profile', { id: next.id }, { dialog, profile }); }
       finally { switchingTo = null; }
     });
 });
@@ -522,7 +544,7 @@ $('#older').addEventListener('click', async () => {
   const scroller = $('#chat-scroll');
   try {
     const query = new URLSearchParams({ before: oldest, profile: state.activeProfile });
-    const page = await api('/api/history?' + query);
+    const page = await api('/history?' + query);
     if (generation !== historyGeneration || oldest !== messages[0]?.id) return;
     const priorHeight = scroller.scrollHeight;
     messages = [...page.messages, ...messages];
@@ -530,11 +552,14 @@ $('#older').addEventListener('click', async () => {
     renderChat();
     scroller.scrollTop += scroller.scrollHeight - priorHeight;
   } catch (error) {
+    if (generation !== historyGeneration) return;
     await refresh({ report: false });
-    if (state) notice(error.message);
+    if (state && generation === historyGeneration) notice(error.message);
   } finally {
-    loadingHistory = false;
-    $('#older').disabled = false;
+    if (generation === historyGeneration) {
+      loadingHistory = false;
+      $('#older').disabled = false;
+    }
   }
 });
 
@@ -546,24 +571,29 @@ $('#chat-form').addEventListener('submit', async (event) => {
   if (!content) { input.focus(); return; }
   const prior = new Set(messages.map((m) => m.id));
   const profile = state.activeProfile;
+  const epoch = agentEpoch;
+  const key = draftKey(state);
   sending = true;
   input.value = '';
   notice('');
   render();
   try {
-    await api('/api/chat', { method: 'POST', body: { text: content }, profile });
-    await refresh();
+    await api('/chat', { method: 'POST', body: { text: content }, profile });
+    if (epoch === agentEpoch) await refresh();
   } catch (error) {
+    if (epoch !== agentEpoch) return;
     await refresh({ report: false });
-    if (state) {
+    if (state && epoch === agentEpoch) {
       const saved = messages.some((m) => !prior.has(m.id) && m.role === 'user' && m.content === content);
-      if (!saved && state.activeProfile === profile && !input.value) input.value = content;
-      if (!saved && state.activeProfile !== profile && !drafts.get(profile)) drafts.set(profile, content);
+      if (!saved && draftKey(state) === key && !input.value) input.value = content;
+      if (!saved && draftKey(state) !== key && !drafts.get(key)) drafts.set(key, content);
       notice(error.message);
     }
   } finally {
-    sending = false;
-    render();
+    if (epoch === agentEpoch) {
+      sending = false;
+      render();
+    }
   }
 });
 
@@ -582,7 +612,7 @@ $('#memory-form').addEventListener('submit', async (event) => {
   if (!text) return showError($('#memory-dialog .dialog-error'), 'Enter the text you want to save.');
   const list = draft.kind === 'preference' ? 'preferences' : 'commitments';
   const edit = draft.id != null;
-  const ok = await mutate('/api/' + list + (edit ? '/' + encodeURIComponent(draft.id) : ''), { text }, {
+  const ok = await mutate('/' + list + (edit ? '/' + encodeURIComponent(draft.id) : ''), { text }, {
     method: edit ? 'PATCH' : 'POST', dialog: $('#memory-dialog'), profile: draft.profile
   });
   if (ok && state) { memoryView = list; go('memory', true); }
@@ -606,13 +636,16 @@ $('#job-form').addEventListener('submit', async (event) => {
     recurrence: $('#job-recurrence').value, condition: $('#job-condition').value,
     tool: tool ? { name: tool, args } : null
   };
-  const ok = await mutate('/api/jobs', spec, { dialog: $('#job-dialog'), profile: jobProfile.id });
+  const ok = await mutate('/jobs', spec, { dialog: $('#job-dialog'), profile: jobProfile.id });
   if (ok && state) go('schedules', true);
 });
 
 $('#confirm-form').addEventListener('submit', (event) => {
   event.preventDefault();
   if (confirmation) confirmation($('#confirm-dialog'));
+});
+$('#confirm-dialog').addEventListener('close', () => {
+  if (!$('#confirm-dialog').open) confirmation = null;
 });
 $('#job-tool').addEventListener('change', updateJobTool);
 $('#add-memory').addEventListener('click', () => openMemory(memoryView === 'preferences' ? 'preference' : 'commitment'));
@@ -645,10 +678,13 @@ document.addEventListener('keydown', (event) => {
 });
 window.matchMedia('(min-width: 761px)').addEventListener('change', (event) => { if (event.matches) closeNav(); });
 async function poll() {
-  if (document.hidden || !state || polling) return;
+  if (document.hidden || !directory || polling) return;
   polling = true;
-  try { await refresh(); } finally { polling = false; }
+  try {
+    if (view === 'agents') await loadDirectory();
+    else if (state) await refresh();
+  } finally { polling = false; }
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
 setInterval(poll, 5000);
-refresh();
+window.addEventListener('DOMContentLoaded', () => startSession());

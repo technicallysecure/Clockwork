@@ -3,18 +3,18 @@
   "grants": {
     "local": {
       "scope": "personal",
-      "tools": ["list_commitments"],
-      "permissions": ["commitments.read"]
+      "tools": ["list_commitments", "list_workspace", "read_workspace"],
+      "permissions": ["commitments.read", "workspace.read"]
     },
     "hosted": {
       "scope": "personal",
-      "tools": ["list_commitments"],
-      "permissions": ["commitments.read"]
+      "tools": ["list_commitments", "list_workspace", "read_workspace"],
+      "permissions": ["commitments.read", "workspace.read"]
     },
     "focus": {
       "scope": "focus",
-      "tools": ["list_commitments", "estimate_blocks"],
-      "permissions": ["commitments.read", "time.estimate"]
+      "tools": ["list_commitments", "estimate_blocks", "list_workspace", "read_workspace"],
+      "permissions": ["commitments.read", "time.estimate", "workspace.read"]
     }
   }
 }

@@ -7,5 +7,5 @@
   "baseUrl": "https://api.openai.com/v1",
   "nativeTools": "$CLOCKWORK_OPENAI_TOOLS",
   "scope": "personal",
-  "tools": ["list_commitments"]
+  "tools": ["list_commitments", "list_workspace", "read_workspace"]
 }

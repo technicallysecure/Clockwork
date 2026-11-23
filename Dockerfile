@@ -6,7 +6,7 @@ COPY src/ src/
 COPY public/ public/
 COPY config/ config/
 COPY extensions/ extensions/
-RUN mkdir -p /data && chown node:node /data
+RUN mkdir -p /data /workspace && chown node:node /data /workspace
 USER node
 ENV CLOCKWORK_BIND=0.0.0.0 CLOCKWORK_PORT=8787 CLOCKWORK_DB=/data/clockwork.sqlite
 EXPOSE 8787

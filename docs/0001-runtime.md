@@ -1,6 +1,6 @@
 # ADR 0001 — One owner, one durable runtime
 
-Accepted for the first release.
+Accepted for the first release. The [multi-agent deployment](agents.md) now runs one instance of this runtime per worker and serves the owner interface through a gateway.
 
 Clockwork needs to keep a promise when a browser closes, an inference server fails, or Core‑2 reboots. A single Node 24 process serves the authenticated web channel and polls SQLite. SQLite owns conversation history, owner-entered memory and commitments, approved job specifications, run attempts, approval decisions, and the notification inbox. A profile change selects inference for future turns. It preserves these records.
 

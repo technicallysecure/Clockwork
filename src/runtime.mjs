@@ -3,6 +3,9 @@ import { createCapabilities } from './capabilities.mjs';
 import { createProvider } from './providers.mjs';
 import { createScheduler } from './scheduler.mjs';
 import { Notebook, badRequest, requiredText } from './store.mjs';
+import { createAgentSettings } from './agent-settings.mjs';
+import { createAssignmentRunner } from './assignments.mjs';
+import { createWorkspace, workspaceTools } from './workspace.mjs';
 
 const explicitCommand = /^\/(remember|commit)(?:\s+([\s\S]*))?$/i;
 const systemRules = [
@@ -30,7 +33,7 @@ function contextEntries(rows) {
   return result;
 }
 
-function inferenceHistory(notebook, profile) {
+function inferenceHistory(notebook, profile, agent) {
   const entries = notebook.messages(profile.scope, 64);
   const current = entries.pop();
   // Only completed conversation pairs go back to inference. A failed turn or
@@ -56,38 +59,38 @@ function inferenceHistory(notebook, profile) {
     open_commitments: contextEntries(notebook.memories(profile.scope, 'commitment').filter(row => !row.done)),
   };
   return [
-    { role: 'system', content: `${systemRules}\n\nProfile instructions:\n${profile.instructions}` },
+    { role: 'system', content: `${systemRules}\n\nOwner-configured agent goal:\n${agent.goal}\n\nProfile instructions:\n${profile.instructions}` },
     ...recent,
     { role: 'user', content: JSON.stringify({saved_context:context, owner_request:current.content}) },
   ];
 }
 
-export async function createRuntime({ db, root, env = process.env, config = loadConfig({root, env}), provider, extensions, schedulerOptions = {} }) {
+export async function createRuntime({ db, root, env = process.env, config = loadConfig({root, env}), provider,
+  extensions, workspaceDir, workspace = workspaceDir ? createWorkspace(workspaceDir) : undefined, schedulerOptions = {} }) {
   const notebook = new Notebook(db);
+  const agentSettings = createAgentSettings({db, notebook, config, env});
+  const {active, getProfile} = agentSettings;
+  const installedTools = extensions ?? await loadExtensions(config);
   const capabilities = createCapabilities({
-    db, config, extensions: extensions ?? await loadExtensions(config),
+    db, config, extensions: workspace ? [...installedTools, ...workspaceTools(workspace)] : installedTools,
     readCommitments: scope => notebook.memories(scope, 'commitment').filter(row => !row.done),
   });
-  const inference = provider ?? createProvider({config, env});
-  function getProfile(id) {
-    const profile = config.profiles.find(item => item.id === id);
-    if (!profile || (config.localOnly && profile.provider !== 'lmstudio')) throw badRequest('Profile unavailable in this operating mode.');
-    return profile;
-  }
+  const inference = provider ?? createProvider({config, env, credentialFor:agentSettings.credentialFor});
   const scheduler = createScheduler({ db, capabilities, getProfile, ...schedulerOptions });
-  const previous = notebook.getSetting('profile');
-  let activeId = config.profiles.some(p => p.id === previous) ? previous : config.defaultProfile;
   let chatting = false;
-  const active = () => getProfile(activeId);
 
   function selectProfile(id) {
-    getProfile(id);
     if (chatting) throw badRequest('Wait for the current reply before switching profiles.', 409);
-    notebook.setSetting('profile', id);
-    activeId = id;
+    return agentSettings.selectProfile(id);
+  }
+
+  function updateSettings(input) {
+    if (chatting) throw badRequest('Wait for the current reply before changing settings.', 409);
+    return agentSettings.update(input);
   }
 
   async function chat(input) {
+    agentSettings.ready();
     if (chatting) throw badRequest('Another reply is in progress.', 409);
     const text = requiredText(input, 'Message', 8000);
     const profile = active();
@@ -110,7 +113,7 @@ export async function createRuntime({ db, root, env = process.env, config = load
     chatting = true;
     try {
       notebook.append(profile, 'user', text);
-      const messages = inferenceHistory(notebook, profile);
+      const messages = inferenceHistory(notebook, profile, agentSettings.info());
       const tools = profile.nativeTools ? capabilities.list(profile) : [];
       const allowedTools = tools.map(tool => tool.name);
       const signal = AbortSignal.timeout(60000);
@@ -162,10 +165,12 @@ export async function createRuntime({ db, root, env = process.env, config = load
   }
 
   function state() {
+    agentSettings.ready();
     const profile = active();
     const messages = notebook.messages(profile.scope, 101);
     return {
-      profiles: config.profiles.map(p => ({
+      agent: agentSettings.info(), settingsRevision: agentSettings.revision(),
+      profiles: config.profiles.map(base => getProfile(base.id)).map(p => ({
         id: p.id, label: p.label, provider: p.provider, model: p.model, scope: p.scope,
         nativeTools: p.nativeTools, tools: capabilities.list(p),
       })),
@@ -175,5 +180,14 @@ export async function createRuntime({ db, root, env = process.env, config = load
       jobs: scheduler.list(), runs: scheduler.runs(), notifications: scheduler.notifications(), approvals: capabilities.approvals(),
     };
   }
-  return { active, selectProfile, getProfile, state, chat, notebook, scheduler, capabilities };
+  const assign = createAssignmentRunner({db, chat, checkTarget(profileId, revision) {
+    agentSettings.ready();
+    if (profileId !== active().id || revision !== agentSettings.revision()) {
+      throw badRequest('The agent or its settings changed. Review the assignment before sending.', 409);
+    }
+    if (chatting) throw badRequest('This agent is already replying. Try again when it finishes.', 409);
+  }});
+  return { active, selectProfile, getProfile, state, chat, assign, notebook, scheduler, capabilities, workspace,
+    agentInfo:agentSettings.info, initializeAgent:agentSettings.initialize, settings:agentSettings.settings,
+    settingsRevision:agentSettings.revision, updateSettings };
 }

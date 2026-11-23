@@ -2,6 +2,7 @@
 .secrets/
 data/
 *.sqlite
+*.sqlite.key
 *.sqlite-shm
 *.sqlite-wal
 node_modules/
