@@ -40,5 +40,12 @@ export function createPlanCallback(redirectUri) {
         : 'Sign-in could not be completed. Return to Clockwork Settings and start a new sign-in.');
     }
   });
-  return {server, track};
+  function listen({role, env}) {
+    // Docker publishes its dedicated gateway socket on host loopback. Native
+    // gateways must bind to loopback even when their web UI is on the network.
+    const container = role === 'gateway' && env.CLOCKWORK_PLAN_CONTAINER_CALLBACK === 'true';
+    return new Promise((resolve, reject) => server.once('error', reject)
+      .listen(Number(target.port), container ? '0.0.0.0' : '127.0.0.1', resolve));
+  }
+  return {server, track, listen};
 }

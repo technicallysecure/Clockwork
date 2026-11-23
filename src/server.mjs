@@ -76,12 +76,7 @@ if (role === 'gateway') {
   throw new Error('Unknown CLOCKWORK_ROLE. Choose gateway, worker or standalone.');
 }
 
-if (planCallback) {
-  // The container's dedicated callback socket is published solely to Windows loopback.
-  // Standalone Node always binds the socket directly to loopback.
-  await new Promise((done, fail) => planCallback.server.once('error', fail)
-    .listen(Number(callbackPort), role === 'gateway' ? host : '127.0.0.1', done));
-}
+if (planCallback) await planCallback.listen({role, env});
 server.listen(port, host, () => {
   console.log(`Clockwork listening on ${host}:${server.address().port} (${role})`);
   runtime?.scheduler.start();

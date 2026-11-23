@@ -27,14 +27,29 @@ function planError(response, problem) {
     429: 'ChatGPT rate-limited this request. Check Manage usage in settings and try again later.',
     503: 'The ChatGPT plan route is temporarily unavailable. Try again later.'
   };
-  const error = invalid(codeMessages.get(code) ?? messages[status] ??
+  const invalidToken = code === 'invalid_token' && (status === 401 || status === 200);
+  const error = invalid(invalidToken ? 'ChatGPT rejected the selected plan credential. Reconnect this account in settings.' :
+    codeMessages.get(code) ?? messages[status] ??
     (response.ok ? 'The ChatGPT response failed during streaming.' : 'The ChatGPT plan request failed (HTTP ' + status + ').'));
   // Admission bodies may echo the request. Keep them out of persistent chat errors.
   error.providerStatus = status;
   error.providerCode = typeof code === 'string' ? code : undefined;
   error.providerParam = typeof problem?.param === 'string' ? problem.param : undefined;
   error.requestId = response.headers.get('x-request-id');
+  error.invalidToken = invalidToken;
   return error;
+}
+
+// Match the error parameter of a Bearer challenge. Quoted descriptions and
+// challenges for other authentication schemes cannot establish invalidation.
+function invalidBearer(header) {
+  const bearer = /^\s*Bearer\s+(.+)$/i.exec(header ?? '');
+  if (!bearer) return false;
+  const parameter = /(?:^|,)\s*([\w-]+)\s*=\s*(?:"((?:\\.|[^"\\])*)"|([^",\s]+))\s*(?=,|$)/gy;
+  for (const [, name, quoted, token] of bearer[1].matchAll(parameter)) {
+    if (name.toLowerCase() === 'error') return (quoted ?? token) === 'invalid_token';
+  }
+  return false;
 }
 
 async function* bytes(response, limit) {
@@ -88,20 +103,10 @@ async function readCompletion(response) {
   if (!/^text\/event-stream(?:\s*;|$)/i.test(response.headers.get('content-type') ?? '')) {
     throw invalid('The ChatGPT plan route did not return an event stream.');
   }
-  const doneItems = new Map();
-  let deltas = '';
+  // Only the completed response authorizes a tool dispatch or supplies a final
+  // answer. Earlier items and text deltas may belong to an abandoned generation.
   for await (const event of events(response)) {
     switch (event.type) {
-      case 'response.output_text.delta':
-      case 'response.refusal.delta':
-        if (typeof event.delta !== 'string') throw invalidStream();
-        deltas += event.delta;
-        break;
-      case 'response.output_item.done':
-        if (!Number.isSafeInteger(event.output_index) || event.output_index < 0 || !event.item ||
-            doneItems.has(event.output_index)) throw invalidStream();
-        doneItems.set(event.output_index, event.item);
-        break;
       case 'response.incomplete':
         throw invalid('ChatGPT marked this response incomplete. Try a shorter request.');
       case 'response.failed':
@@ -109,18 +114,17 @@ async function readCompletion(response) {
       case 'error':
         throw planError(response, event.error ?? event);
       case 'response.completed': {
-        if (event.response?.status && event.response.status !== 'completed') throw invalidStream();
+        if (event.response?.status !== 'completed') throw invalidStream();
         const output = event.response?.output;
-        if (output != null && !Array.isArray(output)) throw invalidStream();
-        const items = output?.length ? output : [...doneItems].sort(([a], [b]) => a - b).map(([, item]) => item);
-        return {items, deltas};
+        if (!Array.isArray(output)) throw invalidStream();
+        return output;
       }
     }
   }
   throw invalid('The ChatGPT stream ended before response.completed. The reply was interrupted.');
 }
 
-function unpack({items, deltas}, toolNames) {
+function unpack(items, toolNames) {
   const calls = [];
   const ids = new Set();
   const text = [];
@@ -128,17 +132,20 @@ function unpack({items, deltas}, toolNames) {
     if (!item || typeof item !== 'object') throw invalidStream();
     switch (item.type) {
       case 'message':
-        if (item.role !== 'assistant' || !Array.isArray(item.content)) throw invalidStream();
+        if (item.role !== 'assistant' || !Array.isArray(item.content) ||
+            (item.status != null && item.status !== 'completed') ||
+            (item.phase != null && !['commentary','final_answer'].includes(item.phase))) throw invalidStream();
         for (const part of item.content) {
-          const value = part.type === 'output_text' ? part.text : part.type === 'refusal' ? part.refusal : null;
+          const value = part?.type === 'output_text' ? part.text : part?.type === 'refusal' ? part.refusal : null;
           if (typeof value !== 'string') throw invalidStream();
-          text.push(value);
+          if (item.phase !== 'commentary') text.push(value);
         }
         break;
       case 'reasoning':
         break;
       case 'function_call': {
         if (item.namespace !== 'clockwork' || !toolNames.has(item.name) || calls.length >= 6 ||
+            (item.async != null && item.async !== false) || (item.caller != null && item.caller.type !== 'direct') ||
             typeof item.call_id !== 'string' || !/^[\w.-]{1,128}$/.test(item.call_id) || ids.has(item.call_id) ||
             typeof item.arguments !== 'string' || Buffer.byteLength(item.arguments) > 16384 ||
             (item.status != null && item.status !== 'completed')) throw invalidCall();
@@ -153,7 +160,7 @@ function unpack({items, deltas}, toolNames) {
         throw invalid('ChatGPT returned an output type this application does not support.');
     }
   }
-  const answer = text.length ? text.join('') : deltas;
+  const answer = text.join('');
   if (!answer.trim() && !calls.length) throw invalid('ChatGPT completed without usable text or tool calls.');
   return {text:answer, calls};
 }
@@ -212,7 +219,11 @@ export function createPlanProvider({auth, fetchImpl = fetch, timeoutMs = 45000, 
       if (!response.ok) {
         let body;
         try { body = await readJson(response, 65536); } catch { /* admission errors can be plain text */ }
-        const error = planError(response, body?.error);
+        let problem = body?.error;
+        if (response.status === 401 && (problem === 'invalid_token' || invalidBearer(response.headers.get('www-authenticate')))) {
+          problem = {code:'invalid_token'};
+        }
+        const error = planError(response, problem);
         error.bodyShape = body?.error ? 'error' : typeof body?.detail === 'string' ? 'detail' : 'other';
         throw error;
       }
@@ -220,6 +231,11 @@ export function createPlanProvider({auth, fetchImpl = fetch, timeoutMs = 45000, 
       if (path === '/responses') issues.delete(session.profileId);
       return result;
     } catch (error) {
+      if (error.invalidToken === true) {
+        // Compare both registration and rejected credential so a concurrent
+        // renewal survives an older response from the API.
+        await auth.invalidate(session);
+      }
       if (signal.aborted) throw invalid('The ChatGPT plan request timed out or was cancelled.', 504);
       if (error.providerStatus) {
         const access = error.providerStatus === 401 || ['chatpass_v2_scope_not_authorized',
@@ -279,11 +295,11 @@ export function createPlanProvider({auth, fetchImpl = fetch, timeoutMs = 45000, 
             type:'function', name, description, parameters:inputSchema, strict:false
           }))}];
       }
-      const completed = await request('/responses', session, signal, readCompletion, payload);
-      const reply = unpack(completed, new Set(enabled.map(tool => tool.name)));
+      const items = await request('/responses', session, signal, readCompletion, payload);
+      const reply = unpack(items, new Set(enabled.map(tool => tool.name)));
       if (reply.calls.length) {
         reply.continuation = Object.freeze({});
-        continuations.set(reply.continuation, {...context, items:completed.items, ids:reply.calls.map(c => c.id),
+        continuations.set(reply.continuation, {...context, items, ids:reply.calls.map(c => c.id),
           account:session.profileId, model:profile.model});
       }
       return reply;

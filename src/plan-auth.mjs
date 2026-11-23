@@ -73,7 +73,9 @@ export function createPlanAuth({directory, agentId = 'personal', redirectUri, fe
       const message = code === 'invalid_client' ? 'ChatGPT rejected this client registration.' :
         unusableRefresh.has(code) ? 'The ChatGPT authorization is no longer valid. Reconnect the saved account.' :
         'ChatGPT authorization could not complete. Try again.';
-      throw Object.assign(badRequest(message, response.status >= 500 ? 503 : 403), {oauthCode:known ? code : undefined});
+      throw Object.assign(badRequest(message, response.status >= 500 ? 503 : 403), {
+        oauthCode:known ? code : undefined, grantRejected:response.status >= 400 && response.status <= 599
+      });
     }
     if (!data || typeof data !== 'object') throw badRequest('ChatGPT authorization returned an invalid response.', 502);
     return data;
@@ -199,6 +201,7 @@ export function createPlanAuth({directory, agentId = 'personal', redirectUri, fe
     // from an abandoned exchange; its rotation may have reached the issuer.
     const lease = randomUUID();
     while (true) {
+      signal?.throwIfAborted();
       const selected = vault().update(state => {
         const a = current(state,id);
         const s = a.session;
@@ -215,10 +218,8 @@ export function createPlanAuth({directory, agentId = 'personal', redirectUri, fe
       if (selected.valid) return;
       if (selected.expiredLease) throw badRequest('A ChatGPT renewal was interrupted. Reconnect this account.', 409);
       if (selected.wait) { await delay(100, undefined, {signal}); force = false; continue; }
-      let rotated = false;
       try {
         const data = await tokenRequest({grant_type:'refresh_token',client_id:selected.client,refresh_token:selected.session.refresh,resource},signal);
-        rotated = true;
         if (data.id_token !== undefined) {
           const identity = await validateIdentity(data.id_token, selected.client, selected.session.nonce, data.access_token, true);
           if (identity.subject !== selected.subject) throw badRequest('ChatGPT renewal returned a different account.', 403);
@@ -231,12 +232,20 @@ export function createPlanAuth({directory, agentId = 'personal', redirectUri, fe
         });
         return;
       } catch (error) {
-        vault().update(state => {
+        const uncertain = vault().update(state => {
           const a = registration(state,id);
           if (a.session?.lease !== lease) return;
-          if (rotated || unusableRefresh.has(error.oauthCode)) a.session = null;
-          else { delete a.session.lease; delete a.session.leaseUntil; }
+          if (error.grantRejected && !unusableRefresh.has(error.oauthCode)) {
+            delete a.session.lease;
+            delete a.session.leaseUntil;
+            return false;
+          }
+          // The issuer may already have spent the token, even when the response
+          // never reached us. Keep the registration for a fresh sign-in.
+          a.session = null;
+          return !error.grantRejected;
         });
+        if (uncertain) throw badRequest('ChatGPT renewal could not be confirmed. Reconnect this account.', 409);
         throw error;
       }
     }

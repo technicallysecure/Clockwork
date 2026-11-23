@@ -19,6 +19,8 @@ const call = {type:'function_call', status:'completed', name:estimate.name, name
   call_id:'call_1', arguments:'{"minutes":50,"blockMinutes":20}'};
 const completed = (output = []) => ({type:'response.completed', response:{status:'completed', output}});
 const delta = text => ({type:'response.output_text.delta', delta:text});
+const message = (text, phase) => ({type:'message', role:'assistant', status:'completed', phase,
+  content:[{type:'output_text', text}]});
 
 function sse(...events) {
   const frames = events.map(event => 'event: ' + event.type + '\r\ndata: ' + JSON.stringify(event) + '\r\n\r\n').join('');
@@ -65,7 +67,7 @@ test('discovery uses the selected grant each time, filters visible slugs and pre
 });
 
 test('text waits for completed inference and uses only supported fields in a stateless public Responses request', async () => {
-  const {plan, requests} = harness(() => sse(delta('ré'), delta('ussi'), completed()));
+  const {plan, requests} = harness(() => sse(delta('ré'), delta('ussi'), completed([message('réussi')])));
   assert.deepEqual(await plan.complete({...profile, nativeTools:false}, chat, [estimate]), {text:'réussi', calls:[]});
   const [models, stream] = requests;
   assert.equal(models.method, 'GET');
@@ -86,7 +88,7 @@ test('one validated read tool round trip replays reasoning and matches function 
   const reasoning = {type:'reasoning', id:'rs_1', summary:[], encrypted_content:'fake-opaque-reasoning'};
   const toolEvent = {type:'response.output_item.done', output_index:1, item:call};
   const {plan, requests} = harness(() => sse({type:'response.output_item.done', output_index:0, item:reasoning},
-    toolEvent, completed()), () => sse(completed([{type:'message', role:'assistant', content:[{type:'output_text', text:'2 blocks, 10 minutes left.'}]}])));
+    toolEvent, completed([reasoning,call])), () => sse(completed([message('2 blocks, 10 minutes left.')])));
   const first = await plan.complete(profile, chat, tools);
   const [{id, name, arguments:args}] = first.calls;
   const result = await capabilities.dispatch(profile, name, args, {allowedTools:tools.map(t => t.name)});
@@ -114,7 +116,7 @@ test('account switch, foreign namespace, unadvertised tool, malformed arguments 
     {continuation:first.continuation}), /account changed/);
   assert.equal(requests.length, 2);
   for (const output of [[{...call, name:'forbidden'}], [{...call,namespace:'other'}], [{...call, arguments:'"test"'}],
-    [{...call, arguments:'invalid'}], [call,call]]) {
+    [{...call, arguments:'invalid'}], [{...call, async:true}], [{...call, caller:{type:'program', caller_id:'pc_1'}}], [call,call]]) {
     await assert.rejects(harness(() => sse(completed(output))).plan.complete(profile, chat, [estimate]), /invalid or unavailable tool/);
   }
   await assert.rejects(harness(() => sse(completed([call]))).plan.complete({...profile,nativeTools:false}, chat, [estimate]), /unavailable tool/);
@@ -131,6 +133,42 @@ test('incomplete, failed, interrupted and malformed streams never release partia
   ]) {
     const {plan} = harness(reply);
     await assert.rejects(plan.complete(profile, chat, [estimate]), expected);
+  }
+});
+
+test('only tools and final text from an authoritative completed response can leave the adapter', async () => {
+  const prior = {type:'response.output_item.done', output_index:9, item:call};
+  const partial = {...message('unfinished', 'final_answer'), status:'incomplete'};
+  for (const last of [{type:'response.completed'}, {type:'response.completed',response:{output:[call]}},
+    {type:'response.completed',response:{status:'completed'}}, completed([]), completed([partial]),
+    completed([message('work in progress','commentary')])]) {
+    const {plan} = harness(() => sse(delta('draft'), prior, last));
+    await assert.rejects(plan.complete(profile, chat, [estimate]), /invalid response stream|without usable text/);
+  }
+  const {plan} = harness(() => sse(prior, completed([message('Intermediate commentary.','commentary'), message('Final answer.','final_answer')])));
+  assert.deepEqual(await plan.complete(profile, chat, [estimate]), {text:'Final answer.',calls:[]});
+});
+
+test('only a confirmed invalid bearer credential clears the corresponding stored session', async () => {
+  const session = {profileId:'first-workspace',accessToken:'fake-selected-oauth'};
+  for (const [response, expected] of [
+    [Response.json({error:{code:'invalid_token'}},{status:401}), true],
+    [new Response('denied',{status:401,headers:{'www-authenticate':'Bearer realm="OpenAI", error="invalid_token"'}}), true],
+    [sse({type:'response.failed',response:{error:{code:'invalid_token'}}}), true],
+    [Response.json({detail:'invalid_token'},{status:401}), false],
+    [new Response('',{status:401,headers:{'www-authenticate':'Basic realm="test", error="invalid_token"'}}), false],
+    [new Response('',{status:401,headers:{'www-authenticate':'Bearer error="insufficient_scope", error_description="invalid_token"'}}), false],
+    [Response.json({error:{code:'subscription_sharing_invalid_user'}},{status:401}), false],
+    [Response.json({error:{code:'invalid_token'}},{status:503}), false],
+    [sse({type:'response.failed',response:{error:{code:'subscription_sharing_usage_limit_exceeded'}}}), false],
+  ]) {
+    const invalidated = [];
+    const plan = createPlanProvider({
+      auth:{credential:async () => session, invalidate:async rejected => invalidated.push(rejected)},
+      fetchImpl:async url => url.endsWith('/models') ? catalog() : response,
+    });
+    await assert.rejects(plan.complete(profile, chat));
+    assert.deepEqual(invalidated, expected ? [session] : []);
   }
 });
 
@@ -179,7 +217,7 @@ test('admission rejection pauses the rejected bearer, permits token rotation and
   let account = 'workspace-a';
   let token = 'fake-rejected';
   const {fetchImpl, requests} = harness(() => Response.json({detail:'untrusted admission diagnostic'}, {status:401}),
-    () => sse(delta('OK after rotation'), completed()));
+    () => sse(delta('OK after rotation'), completed([message('OK after rotation')])));
   const plan = createPlanProvider({fetchImpl, auth:{async credential() { return {profileId:account, accessToken:token}; }}});
   await assert.rejects(plan.complete(profile, chat), /rejected/);
   const diagnosis = plan.lastIssue(account);

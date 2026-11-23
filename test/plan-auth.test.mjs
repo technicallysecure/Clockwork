@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createPlanAuth } from '../src/plan-auth.mjs';
+import { createPlanCallback } from '../src/plan-callback.mjs';
 
 const issuer = 'https://auth.openai.com';
 const redirectUri = 'http://127.0.0.1:12002/auth/callback';
@@ -36,6 +37,7 @@ function fixture(t) {
       f.refreshes++;
       assert.equal(form.has('scope'),false);
       await new Promise(resolve => setTimeout(resolve,15));
+      if (f.refreshReply) return f.refreshReply();
       if (f.refreshError) return json({error:f.refreshError},400);
       return json({token_type:'Bearer',scope:f.refreshScope ?? all,expires_in:3600,
         access_token:'renewed-access-' + client,refresh_token:'rotated-refresh-' + client});
@@ -234,4 +236,50 @@ test('callback configuration accepts only the fixed loopback host and registered
   for (const uri of ['http://localhost:12002/auth/callback','https://127.0.0.1/auth/callback','http://127.0.0.1:12002/callback','http://user@127.0.0.1/auth/callback','http://127.0.0.1/auth/callback?a=1']) {
     assert.throws(() => createPlanAuth({redirectUri:uri}),/callback/);
   }
+});
+
+test('lost or unusable successful rotation responses permanently retire the old token', async t => {
+  const f = fixture(t);
+  const replies = [
+    () => { throw new TypeError('mock connection lost after issuer received the request'); },
+    () => new Response(null,{status:200}),
+    () => json(null),
+    () => json({token_type:'Bearer', scope:all, expires_in:3600, access_token:'replacement',
+      refresh_token:'rotated', id_token:'malformed'})
+  ];
+  for (const [i,reply] of replies.entries()) {
+    const {activeId} = await f.connect('oaiapp_uncertain_' + i);
+    f.refreshReply = reply;
+    const before = f.refreshes;
+    await assert.rejects(f.auth.renew(activeId), /Reconnect/);
+    const resumed = f.open();
+    assert.equal(resumed.status().activeId, activeId);
+    assert.equal(resumed.status().connected, false);
+    await assert.rejects(resumed.credential({profileId:activeId}), /Reconnect/);
+    assert.equal(f.refreshes, before + 1);
+  }
+});
+
+test('an explicit transient rejection or pre-dispatch cancellation leaves renewal available', async t => {
+  const f = fixture(t);
+  const {activeId} = await f.connect('oaiapp_retry');
+  f.clock += 3600_000;
+  await assert.rejects(f.auth.credential({signal:AbortSignal.abort()}), {name:'AbortError'});
+  assert.equal(f.refreshes, 0);
+  f.refreshReply = () => json({error:'temporarily_unavailable'}, 503);
+  await assert.rejects(f.auth.renew(activeId), /Try again/);
+  assert.equal(f.auth.status().connected, true);
+  f.refreshReply = null;
+  assert.equal(await f.open().accessToken({accountId:activeId}), 'renewed-access-oaiapp_retry');
+  assert.equal(f.refreshes, 2);
+});
+
+test('native gateway callback only listens on loopback even with a network-facing web UI', async t => {
+  const relay = createPlanCallback('http://127.0.0.1:0/auth/callback');
+  await relay.listen({role:'gateway', env:{CLOCKWORK_BIND:'0.0.0.0'}});
+  t.after(() => new Promise(resolve => relay.server.close(resolve)));
+  assert.equal(relay.server.address().address, '127.0.0.1');
+  const port = relay.server.address().port;
+  const response = await fetch('http://127.0.0.1:' + port + '/auth/callback?state=unknown');
+  assert.equal(response.status, 400);
 });
