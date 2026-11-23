@@ -6,6 +6,14 @@ const plain = value => value !== null && typeof value === 'object' &&
 const safeName = name => typeof name === 'string' && /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(name) &&
   !['constructor', 'prototype', '__proto__'].includes(name);
 const fail = (message, status = 400) => Object.assign(new Error(message), {status});
+// Only trusted tool code may supply a diagnostic for the owner. Network
+// exception text and raw server responses stay inside the transport.
+export class ToolError extends Error {
+  constructor(message, status = 502) {
+    super(message);
+    this.status = status;
+  }
+}
 const keywords = {
   object: ['properties', 'required', 'additionalProperties'],
   array: ['items', 'minItems', 'maxItems'],
@@ -74,8 +82,8 @@ function checkValue(s, value, at = 'arguments') {
   }
 }
 
-function metadata({name, description, inputSchema, permissions, effect, network}) {
-  return {name, description, inputSchema, permissions, effect, network};
+function metadata({name, description, inputSchema, permissions, effect, network, ownerInputOnly}) {
+  return {name, description, inputSchema, permissions, effect, network, ...(ownerInputOnly ? {ownerInputOnly:true} : {})};
 }
 
 function publicApproval(row) {
@@ -101,6 +109,8 @@ export function createCapabilities({db, config, getProfile, extensions = [], rea
         !Array.isArray(tool.permissions) || !tool.permissions.length ||
         !tool.permissions.every(x => typeof x === 'string' && /^[a-z][a-z0-9_.-]{0,63}$/.test(x)) ||
         typeof tool.network !== 'boolean' || typeof tool.execute !== 'function' ||
+        (tool.validateArgs !== undefined && typeof tool.validateArgs !== 'function') ||
+        (tool.ownerInputOnly !== undefined && (typeof tool.ownerInputOnly !== 'boolean' || tool.effect !== 'read')) ||
         typeof tool.description !== 'string' || !tool.description.trim() || tool.inputSchema?.type !== 'object' ||
         (tool.effect !== 'read' && typeof tool.destination !== 'function')) {
       throw new Error('Invalid or duplicate tool descriptor.');
@@ -135,14 +145,16 @@ export function createCapabilities({db, config, getProfile, extensions = [], rea
       (allowedTools === undefined || (Array.isArray(allowedTools) && allowedTools.includes(tool.name)));
   }
 
-  function validate(p, name, args, {allowedTools, readOnly = false} = {}) {
+  function validate(p, name, args, {allowedTools, readOnly = false, ownerInput = false} = {}) {
     const profile = activeProfile(p);
     const tool = registry.get(name);
-    if (!tool || !permitted(profile, tool, allowedTools) || (readOnly && tool.effect !== 'read')) {
+    if (!tool || !permitted(profile, tool, allowedTools) || (readOnly && tool.effect !== 'read') ||
+        (tool.ownerInputOnly && !ownerInput)) {
       throw fail('Tool unavailable under the current permissions.', 403);
     }
     checkValue(tool.inputSchema, args);
     if (Buffer.byteLength(JSON.stringify(args)) > 16384) throw fail('Tool arguments are too large.');
+    tool.validateArgs?.(args);
     return metadata(tool);
   }
 
@@ -150,12 +162,13 @@ export function createCapabilities({db, config, getProfile, extensions = [], rea
     signal?.throwIfAborted();
     try {
       const result = await tool.execute(args, {scope: memoryScope(profile), profile:{
-        provider:profile.provider, planAccountId:profile.planAccountId,
+        id:profile.id, provider:profile.provider, planAccountId:profile.planAccountId,
       }, signal, destination});
       const serialized = JSON.stringify(result);
       if (typeof serialized !== 'string' || Buffer.byteLength(serialized) > 1024 * 1024) throw fail('Invalid tool result.');
       return JSON.parse(serialized);
-    } catch {
+    } catch (error) {
+      if (error instanceof ToolError) throw error;
       throw fail('Tool execution failed.', 502);
     }
   }

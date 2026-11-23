@@ -36,6 +36,10 @@ To check the deployment's default endpoint from the personal worker, use the com
 docker compose exec clockwork node -e "fetch(process.env.CLOCKWORK_LM_BASE_URL+'/models',{redirect:'error',signal:AbortSignal.timeout(5000)}).then(r=>console.log(r.status)).catch(e=>{console.error(e.message);process.exit(1)})"
 ```
 
+### Search the web
+
+For public web research, open **Web search** in the chat composer and enter the terms you want to send to search engines. Clockwork returns source links and snippets even when the selected model is offline. **Read page** fetches readable text from a result. The deployment and the selected agent profile must permit web search. [Setup, privacy and verification](docs/web-search.md)
+
 ### Enable hosted inference
 
 The deployment's local-only setting is an operator control. To permit API-key inference, set `CLOCKWORK_LOCAL_ONLY=false` in `.env` and run `docker compose up -d --build --wait`. In **Agent settings**, select **General · Hosted**, enter the model ID and an OpenAI API key, and confirm. Switching to a hosted provider opens its own history, memory and workspace. Switch back to **General · Local** for the original history and files.
@@ -73,9 +77,10 @@ The **Focus planner** sample demonstrates an independently installed specialty. 
 
 Each agent has a persistent `/data` volume for SQLite and its credential-encryption key, and a separate `/workspace` volume for files. For a consistent backup, stop the chosen worker and copy both directories, including hidden files. The personal agent continues to use the original `clockwork_data` database volume. [Per-agent backup instructions](docs/agents.md)
 
-Run the tests with Node 24 from the project root, or inside the Compose image. No package installation, model download, API key or live model is needed for the suite.
+Run the tests with Node 24 from the project root, or inside the Compose image. Native Node uses the locked packages for parsing HTML and robots policies. The suite uses mock model and web transports.
 
 ```powershell
+npm ci --ignore-scripts
 node --test
 # Docker-only alternative after building the image
 docker compose run --rm --no-deps -v ./test:/app/test:ro clockwork node --test

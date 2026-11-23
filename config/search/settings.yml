@@ -1,0 +1,22 @@
+use_default_settings:
+  engines:
+    keep_only: [duckduckgo, mwmbl]
+general:
+  debug: false
+  enable_metrics: false
+search:
+  formats: [json]
+  safe_search: 2
+  autocomplete: ""
+server:
+  limiter: false
+  public_instance: false
+  image_proxy: false
+outgoing:
+  request_timeout: 5
+  max_request_timeout: 6
+engines:
+  - name: duckduckgo
+    disabled: false
+  - name: mwmbl
+    disabled: false

@@ -40,12 +40,22 @@ export function openStore(filename) {
       content TEXT NOT NULL, profileId TEXT NOT NULL, createdAt TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS messages_scope_id ON messages(scope,id);
+    CREATE TABLE IF NOT EXISTS web_sources (
+      id TEXT PRIMARY KEY, messageId INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      position INTEGER NOT NULL, title TEXT NOT NULL, url TEXT NOT NULL, snippet TEXT NOT NULL,
+      UNIQUE(messageId, position)
+    );
     CREATE TABLE IF NOT EXISTS memories (
       id INTEGER PRIMARY KEY, scope TEXT NOT NULL, kind TEXT NOT NULL,
       text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, createdAt TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS memories_scope_kind ON memories(scope,kind);
   `);
+  transaction(db, () => {
+    if (!db.prepare('PRAGMA table_info(messages)').all().some(column => column.name === 'origin')) {
+      db.exec("ALTER TABLE messages ADD COLUMN origin TEXT NOT NULL DEFAULT 'chat'");
+    }
+  });
   return db;
 }
 
@@ -83,14 +93,21 @@ export class Notebook {
     if (!result.changes) throw badRequest('Preference not found in this memory scope.', 404);
   }
 
-  messages(scope, limit, before = Number.MAX_SAFE_INTEGER) {
-    return this.db.prepare('SELECT id,role,content,profileId,createdAt FROM messages WHERE scope=? AND id<? ORDER BY id DESC LIMIT ?')
-      .all(scope, before, limit).reverse();
+  messages(scope, limit, before = Number.MAX_SAFE_INTEGER, chatOnly = false) {
+    const rows = this.db.prepare(`SELECT id,role,content,profileId,createdAt,origin FROM messages
+      WHERE scope=? AND id<? ${chatOnly ? "AND origin='chat'" : ''} ORDER BY id DESC LIMIT ?`).all(scope, before, limit).reverse();
+    const sources = this.db.prepare('SELECT id,title,url,snippet FROM web_sources WHERE messageId=? ORDER BY position');
+    for (const row of rows) {
+      if (row.origin === 'web' && row.role === 'assistant') row.sources = sources.all(row.id);
+      delete row.origin;
+    }
+    return rows;
   }
 
-  append(profile, role, content) {
-    this.db.prepare('INSERT INTO messages(scope,role,content,profileId,createdAt) VALUES(?,?,?,?,?)')
-      .run(memoryScope(profile), role, content, profile.id, new Date().toISOString());
+  append(profile, role, content, origin = 'chat') {
+    const result = this.db.prepare('INSERT INTO messages(scope,role,content,profileId,createdAt,origin) VALUES(?,?,?,?,?,?)')
+      .run(memoryScope(profile), role, content, profile.id, new Date().toISOString(), origin);
+    return Number(result.lastInsertRowid);
   }
 
   getSetting(key) {

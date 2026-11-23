@@ -94,7 +94,15 @@
           <div id="transcript" class="transcript" role="log" aria-label="Chat history" aria-live="polite"></div>
           <p id="waiting" class="waiting" role="status" hidden>Waiting for a reply…</p>
         </div>
-        <div class="composer-wrap"><form id="chat-form" class="composer"><label for="message" class="sr-only">Message</label><textarea id="message" placeholder="Message your assistant…" rows="2" required maxlength="8000"></textarea><button class="send" type="submit" aria-label="Send message"><svg class="icon"><use href="#i-send"/></svg></button></form><div class="composer-foot"><details class="commands"><summary>Chat commands</summary><p><code>/remember</code> followed by a preference saves it to memory. <code>/commit</code> followed by a task records a commitment.</p></details><p class="composer-hint">Enter to send <span>·</span> Shift + Enter for a new line</p></div></div>
+        <div class="composer-wrap">
+          <form id="chat-form" class="composer"><label for="message" class="sr-only">Message</label><textarea id="message" placeholder="Message your assistant…" rows="2" required maxlength="8000"></textarea><button class="send" type="submit" aria-label="Send message"><svg class="icon"><use href="#i-send"/></svg></button></form>
+          <form id="web-search-form" class="search-composer" hidden>
+            <label for="web-query">Web search</label>
+            <p class="meta" id="web-query-help">Public search engines receive these terms. Clockwork may read a result to answer.</p>
+            <div class="query-controls"><input id="web-query" type="search" placeholder="Enter search terms…" autocomplete="off" spellcheck="false" required maxlength="300" aria-describedby="web-query-help"><button type="submit" class="primary">Search web</button></div>
+          </form>
+          <div class="composer-foot"><div class="composer-options"><button type="button" id="web-search-toggle" class="secondary" aria-expanded="false" aria-controls="web-search-form" hidden>Web search</button><details class="commands"><summary>Chat commands</summary><p><code>/remember</code> followed by a preference saves it to memory. <code>/commit</code> followed by a task records a commitment.</p></details></div><p class="composer-hint">Enter to send <span>·</span> Shift + Enter for a new line</p></div>
+        </div>
       </section>
       <section id="view-memory" class="page" hidden>
         <div class="page-inner">
@@ -165,6 +173,7 @@
           <div id="model-field"><label for="settings-model">Model ID</label><input id="settings-model" maxlength="256" required spellcheck="false"></div>
           <div id="url-field"><label for="settings-url">API base URL</label><input id="settings-url" type="url" maxlength="1024" required spellcheck="false"></div>
           <label class="check-line"><input id="settings-tools" type="checkbox"> Enable native tool calling for this model</label>
+          <label id="settings-search-field" class="check-line" hidden><input id="settings-search" type="checkbox"> Allow web search and reading public sources for this profile</label>
           <div id="credential-field"><label for="credential-mode">Provider credential</label><select id="credential-mode"><option value="keep">Use credential for this endpoint</option><option value="replace">Set a new credential</option><option value="clear">Clear credential for this endpoint</option></select>
           <small id="credential-status"></small>
           <div id="credential-entry" hidden><label for="settings-credential">New credential</label><input id="settings-credential" type="password" maxlength="4096" autocomplete="new-password" spellcheck="false"></div></div>

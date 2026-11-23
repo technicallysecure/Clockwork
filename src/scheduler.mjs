@@ -153,7 +153,7 @@ export function createScheduler({
       if (!tool || !allowedTools.includes(tool.name) || !tool.args || Array.isArray(tool.args) || typeof tool.args !== 'object') {
         throw invalid('Select an allowed read tool and supply its arguments as an object.');
       }
-      capabilities.validate(profile, tool.name, tool.args, { allowedTools, readOnly: true });
+      capabilities.validate(profile, tool.name, tool.args, { allowedTools, readOnly: true, ownerInput:true });
     }
     const nextAt = resolveCivil(parseWallTime(localTime), timezone);
     if (nextAt == null) throw invalid('That clock time is skipped by a timezone transition. Choose another time.');
@@ -322,7 +322,7 @@ export function createScheduler({
           controller.signal.addEventListener('abort', () => reject(new Error('Read interrupted.')), { once: true });
         });
         const read = capabilities.dispatch(profile, spec.tool.name, spec.tool.args, {
-          allowedTools: spec.allowedTools, readOnly: true, signal: controller.signal,
+          allowedTools: spec.allowedTools, readOnly: true, ownerInput:true, signal: controller.signal,
         });
         data = await Promise.race([stopped, read]);
       }

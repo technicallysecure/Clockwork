@@ -65,7 +65,8 @@ export function loadConfig({root = process.cwd(), env = process.env} = {}) {
   }
   const defaultProfile = env.CLOCKWORK_DEFAULT_PROFILE || 'local';
   if (!profiles.some(p => p.id === defaultProfile)) throw new Error('Default profile is unavailable in the selected mode.');
-  return {profiles, defaultProfile, localOnly, policy, extensionPaths};
+  const webSearchAvailable = !localOnly && bool(env.CLOCKWORK_WEB_SEARCH, false);
+  return {profiles, defaultProfile, localOnly, policy, extensionPaths, webSearchAvailable};
 }
 
 export async function loadExtensions(config) {

@@ -2,7 +2,7 @@ import { badRequest, requiredText } from './store.mjs';
 import { createWebServer } from './web-server.mjs';
 
 const agentId = /^[a-z][a-z0-9-]{0,62}$/;
-const workerRoute = /^\/(?:state|history|settings|profile|chat|plan\/(?:status|models|select|renew|signout)|workspace(?:\/[A-Za-z0-9_.-]+)?|preferences(?:\/\d+)?|commitments(?:\/\d+)?|jobs(?:\/[\w-]+\/(?:pause|resume|cancel))?|approvals\/[\w-]+\/(?:approve|reject))$/;
+const workerRoute = /^\/(?:state|history|settings|profile|chat|read-source|plan\/(?:status|models|select|renew|signout)|workspace(?:\/[A-Za-z0-9_.-]+)?|preferences(?:\/\d+)?|commitments(?:\/\d+)?|jobs(?:\/[\w-]+\/(?:pause|resume|cancel))?|approvals\/[\w-]+\/(?:approve|reject))$/;
 const legacyRoute = /^\/(?:state|history|profile|chat|preferences|commitments|jobs|approvals)(?:\/|$)/;
 
 function remoteClient({id, url, token}) {

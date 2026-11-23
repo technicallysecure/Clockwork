@@ -13,6 +13,8 @@ let refreshVersion = 0;
 let historyGeneration = 0;
 let loadingHistory = false;
 let sending = false;
+let webSearchMode = false;
+let webActivity = '';
 let editingMemory;
 let jobProfile;
 let jobRequestId;
@@ -148,6 +150,7 @@ function showLogin(message = '') {
 
 function go(next, focus = false) {
   if (!state && next !== 'agents') next = 'agents';
+  if (next !== 'chat') closeWebSearch();
   view = next;
   closeNav();
   Object.keys(labels).forEach((key) => { $('#view-' + key).hidden = key !== next; });
@@ -192,6 +195,8 @@ async function refresh({ report = true } = {}) {
     const prior = state;
     if (!prior || prior.activeProfile !== data.activeProfile || prior.settingsRevision !== data.settingsRevision) {
       messages = [];
+      closeWebSearch();
+      $('#transcript').replaceChildren();
       historyGeneration++;
       loadingHistory = false;
       $('#older').disabled = false;
@@ -291,25 +296,101 @@ function rowActions(row, ...buttons) {
   row.append(actions);
 }
 
+function closeWebSearch() {
+  webSearchMode = false;
+  $('#web-query').value = '';
+}
+
+function sourceList(sources, canRead, context) {
+  const list = el('ol', 'search-sources');
+  list.setAttribute('aria-label', 'Web sources');
+  for (const [index, source] of sources.entries()) {
+    const url = typeof source?.url === 'string' && URL.parse(source.url);
+    if (!url || url.protocol !== 'https:' || url.username || url.password || url.port ||
+        !url.hostname.includes('.') || /^[\d.]+$/.test(url.hostname) ||
+        /(?:^|\.)(?:localhost|local|internal|test|invalid)\.?$/i.test(url.hostname)) continue;
+    const item = el('li');
+    item.value = index + 1;
+    const link = el('a', 'source-link', source.title || url.hostname);
+    link.href = url.href;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.referrerPolicy = 'no-referrer';
+    const controls = el('div', 'source-controls');
+    controls.append(el('span', 'meta', url.hostname));
+    if (source.id && canRead) {
+      const button = action('Read page', 'secondary read-source', () => readSource(source.id, context));
+      button.setAttribute('aria-label', 'Read page from ' + url.hostname);
+      controls.append(button);
+    }
+    item.append(link);
+    if (source.snippet) item.append(el('p', 'source-snippet', source.snippet));
+    item.append(controls);
+    list.append(item);
+  }
+  return list;
+}
+
+async function webRequest(path, body, context, progress) {
+  if (!state?.webSearchEnabled || context !== draftKey(state) || sending || state.chatting) return false;
+  const epoch = agentEpoch;
+  sending = true;
+  webActivity = progress;
+  notice('');
+  renderChat();
+  try {
+    await api(path, {method:'POST', body});
+    if (epoch === agentEpoch) await refresh();
+    return epoch === agentEpoch && state && draftKey(state) === context;
+  } catch (error) {
+    if (epoch === agentEpoch) await refresh({report:false});
+    if (epoch === agentEpoch && state && draftKey(state) === context) notice(error.message);
+    return false;
+  } finally {
+    if (epoch === agentEpoch) {
+      sending = false;
+      webActivity = '';
+      if (state && view === 'chat') renderChat();
+    }
+  }
+}
+
+function readSource(id, context) {
+  return webRequest('/read-source', {id}, context, 'Reading the public source…');
+}
+
 function renderChat() {
   const scroller = $('#chat-scroll');
   const atEnd = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 110;
-  changed('messages', messages, () => {
+  const context = draftKey(state);
+  changed('messages', [messages, state.webSourceReadEnabled, context], () => {
     const transcript = $('#transcript');
     // Keep existing log nodes when a new turn arrives so screen readers announce only the addition.
     const nodes = new Map([...transcript.children].map((node) => [node.dataset.key, node]));
     const ordered = messages.map((message) => {
       const key = String(message.id);
-      if (nodes.has(key)) return nodes.get(key);
+      const cached = nodes.get(key);
+      const canRead = Boolean(state.webSourceReadEnabled && message.profileId === state.activeProfile);
+      if (cached && cached.dataset.context === context && cached.dataset.canRead === String(canRead)) {
+        const content = $('.message-content', cached);
+        if (content.textContent !== message.content) content.textContent = message.content;
+        return cached;
+      }
       const kind = message.role === 'error' ? 'error-row' : message.role;
       const article = el('article', 'message ' + kind);
       article.dataset.key = key;
-      const who = message.role === 'user' ? 'You' : message.role === 'error' ? 'Provider error' : 'Clockwork';
+      article.dataset.context = context;
+      article.dataset.canRead = String(canRead);
+      const who = message.role === 'user' ? 'You' : message.role === 'error' ? 'Error' : 'Clockwork';
       const metadata = el('div', 'message-meta');
       const source = state.profiles.find((p) => p.id === message.profileId);
       const detail = [source && message.role !== 'user' ? source.label : '', dateText(message.createdAt)].filter(Boolean).join(' · ');
       metadata.append(el('strong', '', who), el('span', '', detail));
       article.append(metadata, el('div', 'message-content', message.content));
+      if (Array.isArray(message.sources) && message.sources.length) {
+        const sources = sourceList(message.sources, canRead, context);
+        if (sources.children.length) article.append(sources);
+      }
       return article;
     });
     // In the common polling case the existing prefix is untouched.
@@ -321,9 +402,23 @@ function renderChat() {
     if (atEnd && !loadingHistory) scroller.scrollTop = scroller.scrollHeight;
   });
   $('#history-nav').hidden = !hasEarlier;
-  $('#waiting').hidden = !(sending || state.chatting);
-  $('.send').disabled = sending || state.chatting;
-  $('#profile').disabled = sending || state.chatting;
+  const busy = sending || state.chatting;
+  $('#waiting').hidden = !busy;
+  $('#waiting').textContent = webActivity || 'Waiting for a reply…';
+  $('.send').disabled = busy;
+  $('#profile').disabled = busy;
+  if (!state.webSearchEnabled && webSearchMode) closeWebSearch();
+  const toggle = $('#web-search-toggle');
+  toggle.hidden = !state.webSearchEnabled;
+  toggle.disabled = busy;
+  toggle.textContent = webSearchMode ? 'Back to chat' : 'Web search';
+  toggle.setAttribute('aria-expanded', String(webSearchMode));
+  $('#chat-form').hidden = webSearchMode;
+  $('#web-search-form').hidden = !webSearchMode;
+  $('.commands').hidden = webSearchMode;
+  $('.composer-hint').hidden = webSearchMode;
+  setBusy($('#web-search-form'), busy);
+  $$('.read-source').forEach(button => { button.disabled = busy; });
 }
 
 function renderMemory() {
@@ -572,7 +667,7 @@ $('#older').addEventListener('click', async () => {
 
 $('#chat-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  if (!state || sending || state.chatting) return;
+  if (!state || sending || state.chatting || webSearchMode) return;
   const input = $('#message');
   const content = input.value.trim();
   if (!content) { input.focus(); return; }
@@ -601,6 +696,27 @@ $('#chat-form').addEventListener('submit', async (event) => {
       sending = false;
       render();
     }
+  }
+});
+
+$('#web-search-toggle').addEventListener('click', () => {
+  if (!state?.webSearchEnabled || sending || state.chatting) return;
+  if (webSearchMode) closeWebSearch();
+  else webSearchMode = true;
+  renderChat();
+  $(webSearchMode ? '#web-query' : '#message').focus();
+});
+
+$('#web-search-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!state?.webSearchEnabled || !webSearchMode || sending || state.chatting) return;
+  const text = $('#web-query').value.trim();
+  if (!text) { $('#web-query').focus(); return; }
+  const done = await webRequest('/chat', {text, webSearch:true}, draftKey(state), 'Searching the web…');
+  if (done && webSearchMode && view === 'chat') {
+    closeWebSearch();
+    renderChat();
+    $('#message').focus();
   }
 });
 
