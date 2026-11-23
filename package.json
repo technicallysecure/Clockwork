@@ -3,9 +3,15 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24.0.0" },
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "scripts": {
     "start": "node src/server.mjs",
     "test": "node --test"
+  },
+  "dependencies": {
+    "parse5-sax-parser": "8.0.1",
+    "robots-parser": "3.1.1"
   }
 }

@@ -41,6 +41,8 @@ Within each agent, a scope such as `personal` is partitioned by provider. Plan d
 
 ## Try the installed extension
 
+Web research works across the three model routes. Search and manual source reads work with native tool calling disabled. A tool-capable model may read one result before summarizing the public sources. Search requires the deployment switch, operator permissions and the owner's profile setting. [Web research design and configuration](web-search.md)
+
 The registry requires an operator-installed tool to declare `hostedSafe: true` before a hosted model can use it. Set this only for tools whose returned data is computed from the current request or read from the supplied context. The bundled `estimate_blocks` is a pure calculation. The profile's tool list, operator permissions, argument schema and approval rules still apply.
 
 1. Select the **Focus planner** profile. It requests `estimate_blocks`, implemented in `extensions/estimate-blocks.mjs`.

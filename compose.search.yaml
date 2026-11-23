@@ -1,0 +1,82 @@
+# Each worker reaches only its own metasearch service at web-search:8080.
+x-search: &search
+  # Official multi-architecture image, 2026.11.23-a7163d091.
+  image: ghcr.io/searxng/searxng@sha256:a7fc607aa6723f5a8982105bcc5ffba4d1b9fc7c6922a31a88d6e4cba49ef12a
+  restart: unless-stopped
+  init: true
+  user: "977:977"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  mem_limit: 384m
+  pids_limit: 96
+  tmpfs:
+    - /tmp:rw,nosuid,nodev,noexec,size=16m
+    - /var/cache/searxng:rw,nosuid,nodev,noexec,size=32m,uid=977,gid=977,mode=0700
+  volumes:
+    - ./config/search:/etc/searxng:ro
+  environment:
+    GRANIAN_HOST: 0.0.0.0
+    GRANIAN_WORKERS: "1"
+    GRANIAN_RUNTIME_THREADS: "1"
+  # An instance-local signing key needs no persistence with this API-only client.
+  entrypoint:
+    - /bin/sh
+    - -ec
+    - |
+      export SEARXNG_SECRET="$$(/usr/local/searxng/.venv/bin/python -c 'import secrets; print(secrets.token_hex(32))')"
+      exec /usr/local/searxng/.venv/bin/granian searx.webapp:app
+  # Upstream error messages can contain the full search query.
+  logging:
+    driver: none
+  healthcheck:
+    test: ["CMD", "/usr/local/searxng/.venv/bin/python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8080/healthz', timeout=3).close()"]
+    interval: 30s
+    timeout: 5s
+    start_period: 20s
+    retries: 3
+
+services:
+  clockwork:
+    environment:
+      CLOCKWORK_WEB_SEARCH: "true"
+    networks:
+      search-personal: {}
+    depends_on:
+      search-personal:
+        condition: service_started
+  worker-agent-2:
+    environment:
+      CLOCKWORK_WEB_SEARCH: "true"
+    networks:
+      search-agent-2: {}
+    depends_on:
+      search-agent-2:
+        condition: service_started
+  worker-agent-3:
+    environment:
+      CLOCKWORK_WEB_SEARCH: "true"
+    networks:
+      search-agent-3: {}
+    depends_on:
+      search-agent-3:
+        condition: service_started
+  search-personal:
+    <<: *search
+    networks:
+      search-personal:
+        aliases: [web-search]
+  search-agent-2:
+    <<: *search
+    networks:
+      search-agent-2:
+        aliases: [web-search]
+  search-agent-3:
+    <<: *search
+    networks:
+      search-agent-3:
+        aliases: [web-search]
+networks:
+  search-personal:
+  search-agent-2:
+  search-agent-3:

@@ -46,6 +46,7 @@ if (@($gateway.Mounts | Where-Object { $_.Destination -ne '/tmp' -and -not $_.De
 $seenIds = @{}
 $volumeNames = @{}
 $workerNetworks = @{}
+$searchCount = 0
 $gatewayNetworks = @($gateway.NetworkSettings.Networks.PSObject.Properties.Name)
 if ($gatewayNetworks.Count -ne $slots.Count) { throw 'Gateway must join exactly one network per slot.' }
 foreach ($container in @($gateway) + $workers) {
@@ -62,10 +63,30 @@ foreach ($worker in $workers) {
         throw "Worker $id publishes a port."
     }
     $networks = @($worker.NetworkSettings.Networks.PSObject.Properties.Name)
-    if ($networks.Count -ne 1 -or $workerNetworks.ContainsKey($networks[0]) -or $networks[0] -notin $gatewayNetworks) {
+    $routing = @($networks | Where-Object { $_ -in $gatewayNetworks })
+    if ($routing.Count -ne 1 -or $workerNetworks.ContainsKey($routing[0])) {
         throw "Worker $id needs a dedicated gateway network."
     }
-    $workerNetworks[$networks[0]] = $true
+    $workerNetworks[$routing[0]] = $true
+    $extra = @($networks | Where-Object { $_ -notin $gatewayNetworks })
+    if ((Get-ContainerSetting $worker 'CLOCKWORK_WEB_SEARCH') -eq 'true') {
+        $search = @($containers | Where-Object { $_.Config.Labels.'com.docker.compose.service' -eq "search-$id" })
+        if ($extra.Count -ne 1 -or $search.Count -ne 1 -or $workerNetworks.ContainsKey($extra[0])) { throw "Missing isolated search service for $id." }
+        $service = $search[0]
+        $links = @($service.NetworkSettings.Networks.PSObject.Properties)
+        if ($links.Count -ne 1 -or $links[0].Name -ne $extra[0] -or 'web-search' -notin $links[0].Value.Aliases) { throw "Incorrect search network for $id." }
+        if ($service.HostConfig.Privileged -or -not $service.HostConfig.ReadonlyRootfs -or
+            $service.Config.User -ne '977:977' -or 'ALL' -notin $service.HostConfig.CapDrop -or
+            $service.HostConfig.LogConfig.Type -ne 'none' -or @($service.HostConfig.PortBindings.PSObject.Properties | Where-Object Value).Count) {
+            throw "Unexpected search privileges, logging or port on $id."
+        }
+        foreach ($mount in $service.Mounts) {
+            if ($mount.Destination -in @('/tmp','/var/cache/searxng') -and $mount.Type -eq 'tmpfs') { continue }
+            if ($mount.Destination -ne '/etc/searxng' -or $mount.Type -ne 'bind' -or $mount.RW) { throw "Unexpected search mount on $id." }
+        }
+        $workerNetworks[$extra[0]] = $true
+        $searchCount++
+    } elseif ($extra.Count) { throw "Unexpected network on $id." }
     $secrets = @("worker_$id")
     if ($id -eq 'personal') { $secrets += @('lm_token', 'openai_key') }
     Test-SecretMounts $worker $secrets
@@ -84,4 +105,5 @@ foreach ($worker in $workers) {
         }
     }
 }
-Write-Host "Verified $($workers.Count) isolated workers, $($volumeNames.Count) private volumes, and a loopback-only gateway."
+if ($containers.Count -ne 1 + $workers.Count + $searchCount) { throw 'Unexpected services in the deployment.' }
+Write-Host "Verified $($workers.Count) isolated workers, $searchCount search services, $($volumeNames.Count) private volumes, and a loopback-only gateway."

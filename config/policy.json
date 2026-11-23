@@ -3,23 +3,23 @@
   "grants": {
     "local": {
       "scope": "personal",
-      "tools": ["list_commitments", "list_workspace", "read_workspace"],
-      "permissions": ["commitments.read", "workspace.read"]
+      "tools": ["list_commitments", "list_workspace", "read_workspace", "web_search", "read_web_source"],
+      "permissions": ["commitments.read", "workspace.read", "web.search", "web.read"]
     },
     "hosted": {
       "scope": "personal",
-      "tools": ["list_commitments", "list_workspace", "read_workspace"],
-      "permissions": ["commitments.read", "workspace.read"]
+      "tools": ["list_commitments", "list_workspace", "read_workspace", "web_search", "read_web_source"],
+      "permissions": ["commitments.read", "workspace.read", "web.search", "web.read"]
     },
     "plan": {
       "scope": "personal",
-      "tools": ["estimate_blocks", "list_commitments"],
-      "permissions": ["time.estimate", "commitments.read"]
+      "tools": ["estimate_blocks", "list_commitments", "web_search", "read_web_source"],
+      "permissions": ["time.estimate", "commitments.read", "web.search", "web.read"]
     },
     "focus": {
       "scope": "focus",
-      "tools": ["list_commitments", "estimate_blocks", "list_workspace", "read_workspace"],
-      "permissions": ["commitments.read", "time.estimate", "workspace.read"]
+      "tools": ["list_commitments", "estimate_blocks", "list_workspace", "read_workspace", "web_search", "read_web_source"],
+      "permissions": ["commitments.read", "time.estimate", "workspace.read", "web.search", "web.read"]
     }
   }
 }

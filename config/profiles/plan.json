@@ -7,5 +7,5 @@
   "baseUrl": "https://api.openai.com/v1",
   "nativeTools": false,
   "scope": "personal",
-  "tools": ["estimate_blocks", "list_commitments"]
+  "tools": ["estimate_blocks", "list_commitments", "web_search", "read_web_source"]
 }

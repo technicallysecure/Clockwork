@@ -8,6 +8,7 @@ import { createAgentSettings } from './agent-settings.mjs';
 import { createAssignmentRunner } from './assignments.mjs';
 import { createWorkspace, workspaceTools } from './workspace.mjs';
 import { memoryScope } from './context.mjs';
+import { createWebResearch } from './web-research.mjs';
 
 const explicitCommand = /^\/(remember|commit)(?:\s+([\s\S]*))?$/i;
 const systemRules = [
@@ -37,7 +38,7 @@ function contextEntries(rows) {
 
 function inferenceHistory(notebook, profile, goal) {
   const scope = memoryScope(profile);
-  const entries = notebook.messages(scope, 64);
+  const entries = notebook.messages(scope, 64, undefined, true);
   const current = entries.pop();
   // Only completed conversation pairs go back to inference. A failed turn or
   // a local command stays visible in history without disrupting model templates.
@@ -69,7 +70,7 @@ function inferenceHistory(notebook, profile, goal) {
 }
 
 export async function createRuntime({ db, root, env = process.env, config = loadConfig({root, env}), provider, planAuth, fetchImpl,
-  extensions, workspaceDir, workspace = workspaceDir ? createWorkspace(workspaceDir) : undefined, schedulerOptions = {} }) {
+  extensions, workspaceDir, workspace = workspaceDir ? createWorkspace(workspaceDir) : undefined, schedulerOptions = {}, webTransport = {} }) {
   const notebook = new Notebook(db);
   const agentSettings = createAgentSettings({db, notebook, config, env, getPlanAccountId:() => {
     // A disconnected registration still owns its conversation. A damaged
@@ -79,8 +80,10 @@ export async function createRuntime({ db, root, env = process.env, config = load
   }});
   const {active, getProfile} = agentSettings;
   const installedTools = extensions ?? await loadExtensions(config);
+  const research = createWebResearch({db, notebook, ...webTransport});
+  const systemTools = [...installedTools, ...research.tools];
   const capabilities = createCapabilities({
-    db, config, getProfile, extensions: workspace ? [...installedTools, ...workspaceTools(workspace)] : installedTools,
+    db, config, getProfile, extensions: workspace ? [...systemTools, ...workspaceTools(workspace)] : systemTools,
     readCommitments: scope => notebook.memories(scope, 'commitment').filter(row => !row.done),
   });
   const planProvider = !config.localOnly && planAuth && createPlanProvider({
@@ -155,44 +158,11 @@ export async function createRuntime({ db, root, env = process.env, config = load
     try {
       notebook.append(profile, 'user', text);
       const messages = inferenceHistory(notebook, profile, agentSettings.goalFor(profile));
-      const tools = profile.nativeTools ? capabilities.list(profile) : [];
+      const tools = profile.nativeTools ? capabilities.list(profile).filter(tool => !tool.ownerInputOnly) : [];
       const allowedTools = tools.map(tool => tool.name);
       const signal = AbortSignal.timeout(60000);
-      // A turn can ask for one batch of reads or action proposals, then summarize it.
-      const first = await inference.complete(profile, messages, tools, {signal});
-      signal.throwIfAborted();
-      let reply = first.text;
-      if (profile.nativeTools && first.calls.length) {
-        if (first.calls.length > 6) throw badRequest('Model requested too many tools for one turn.', 502);
-        messages.push({
-          role: 'assistant', content: first.text || null,
-          tool_calls: first.calls.map(call => ({
-            id: call.id, type: 'function', function: {name: call.name, arguments: JSON.stringify(call.arguments)},
-          })),
-        });
-        let awaitingApproval = false;
-        for (const call of first.calls) {
-          signal.throwIfAborted();
-          let result;
-          try {
-            result = await capabilities.dispatch(profile, call.name, call.arguments, {allowedTools, signal});
-            awaitingApproval ||= result?.approvalRequired === true;
-          } catch {
-            result = { error: 'Tool request failed its checks or could not be completed.' };
-          }
-          messages.push({role: 'tool', tool_call_id: call.id, content: boundedResult(result)});
-        }
-        if (awaitingApproval) {
-          reply = 'The action is waiting for your decision. Open Inbox to review its destination and arguments.';
-        } else {
-          signal.throwIfAborted();
-          const summary = await inference.complete(profile, messages, [], {signal, continuation:first.continuation});
-          reply = summary.text;
-        }
-      }
-      signal.throwIfAborted();
-      if (typeof reply !== 'string' || !reply.trim()) throw badRequest('The selected model returned no chat text.', 502);
-      const content = reply.trim().slice(0, 64000);
+      const content = await completeTurn(profile, messages, tools, signal, (name, args) =>
+        capabilities.dispatch(profile, name, args, {allowedTools, signal}));
       notebook.append(profile, 'assistant', content);
       return content;
     } catch (error) {
@@ -200,6 +170,57 @@ export async function createRuntime({ db, root, env = process.env, config = load
       const detail = error.status && error.status >= 400 && error.status < 600 ? error.message : 'Could not reach the selected model. Check its endpoint, model ID and credential.';
       notebook.append(profile, 'error', detail);
       throw badRequest(detail, error.status === 504 || error.name === 'TimeoutError' ? 504 : 502);
+    } finally {
+      chatting = false;
+    }
+  }
+
+  // A model turn can request one batch of validated tools, then summarize it.
+  async function completeTurn(profile, messages, tools, signal, dispatch) {
+    const first = await inference.complete(profile, messages, tools, {signal});
+    signal.throwIfAborted();
+    let reply = first.text;
+    if (profile.nativeTools && first.calls.length) {
+      if (first.calls.length > 6) throw badRequest('Model requested too many tools for one turn.', 502);
+      messages.push({
+        role: 'assistant', content: first.text || null,
+        tool_calls: first.calls.map(call => ({
+          id: call.id, type: 'function', function: {name: call.name, arguments: JSON.stringify(call.arguments)},
+        })),
+      });
+      let awaitingApproval = false;
+      for (const call of first.calls) {
+        signal.throwIfAborted();
+        let result;
+        try {
+          result = await dispatch(call.name, call.arguments);
+          awaitingApproval ||= result?.approvalRequired === true;
+        } catch {
+          result = { error: 'Tool request failed its checks or could not be completed.' };
+        }
+        messages.push({role: 'tool', tool_call_id: call.id, content: boundedResult(result)});
+      }
+      if (awaitingApproval) {
+        reply = 'The action is waiting for your decision. Open Inbox to review its destination and arguments.';
+      } else {
+        signal.throwIfAborted();
+        const summary = await inference.complete(profile, messages, [], {signal, continuation:first.continuation});
+        reply = summary.text;
+      }
+    }
+    signal.throwIfAborted();
+    if (typeof reply !== 'string' || !reply.trim()) throw badRequest('The selected model returned no chat text.', 502);
+    return reply.trim().slice(0, 64000);
+  }
+
+  async function researchTurn(operation) {
+    agentSettings.ready();
+    if (chatting || changingAccount) throw badRequest('Another operation is in progress.', 409);
+    const profile = active();
+    if (!profile.webSearchEnabled) throw badRequest('Enable web search for this profile in Agent settings.', 403);
+    chatting = true;
+    try {
+      return await operation(profile, AbortSignal.timeout(60000));
     } finally {
       chatting = false;
     }
@@ -216,7 +237,8 @@ export async function createRuntime({ db, root, env = process.env, config = load
         id: p.id, label: p.label, provider: p.provider, model: p.model, scope: p.scope,
         nativeTools: p.nativeTools, tools: capabilities.list(p),
       })),
-      activeProfile: profile.id, localOnly: config.localOnly, chatting,
+      activeProfile: profile.id, localOnly: config.localOnly, chatting, webSearchEnabled:profile.webSearchEnabled,
+      webSourceReadEnabled:profile.webSearchEnabled && capabilities.list(profile, ['read_web_source']).length > 0,
       messages: messages.slice(-100), hasEarlier: messages.length > 100,
       preferences: notebook.memories(scope, 'preference'), commitments: notebook.memories(scope, 'commitment'),
       jobs: scheduler.list(), runs: scheduler.runs(), notifications: scheduler.notifications(), approvals: capabilities.approvals(),
@@ -230,6 +252,8 @@ export async function createRuntime({ db, root, env = process.env, config = load
     if (chatting) throw badRequest('This agent is already replying. Try again when it finishes.', 409);
   }});
   return { active, selectProfile, getProfile, state, chat, assign, notebook, scheduler, capabilities, workspace,
+    searchWeb:query => researchTurn((profile,signal) => research.runSearch(profile, query, capabilities, completeTurn, signal)),
+    readSource:id => researchTurn((profile,signal) => research.readSource(profile, id, capabilities, signal)),
     agentInfo:agentSettings.info, initializeAgent:agentSettings.initialize, settings:agentSettings.settings,
     settingsRevision:agentSettings.revision, updateSettings, planRequest };
 }

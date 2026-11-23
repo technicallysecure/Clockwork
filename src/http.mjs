@@ -55,7 +55,11 @@ function agentRoutes(runtime, workspace) {
     } else if (method === 'POST' && path === '/profile') {
       runtime.selectProfile(body.id);
     } else if (method === 'POST' && path === '/chat') {
-      await runtime.chat(body.text);
+      if (Object.hasOwn(body, 'webSearch') && typeof body.webSearch !== 'boolean') throw badRequest('Invalid web search mode.');
+      if (body.webSearch === true) await runtime.searchWeb(body.text);
+      else await runtime.chat(body.text);
+    } else if (method === 'POST' && path === '/read-source') {
+      await runtime.readSource(body.id);
     } else if (method === 'POST' && path === '/preferences') {
       runtime.notebook.add(scope, 'preference', body.text);
     } else if (method === 'POST' && path === '/commitments') {
