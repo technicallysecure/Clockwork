@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 const origin = 'https://api.openai.com/v1';
 const invalid = (message, status = 502) => Object.assign(new Error(message), {status});
 const invalidStream = () => invalid('ChatGPT returned an invalid response stream.');
+const notEventStream = () => invalid('The ChatGPT plan route did not return an event stream.');
 const invalidCall = () => invalid('ChatGPT requested an invalid or unavailable tool. Check the model’s tool settings.');
 
 const codeMessages = new Map([
@@ -69,7 +70,7 @@ async function readJson(response, limit) {
 }
 
 // SSE events can span multiple data lines, TCP chunks and UTF-8 code points.
-async function* events(response) {
+async function* events(response, verifyFraming) {
   const decoder = new TextDecoder('utf-8', {fatal:true});
   let fragment = '';
   let previousCR = false;
@@ -83,6 +84,9 @@ async function* events(response) {
     lines[0] = fragment + lines[0];
     fragment = lines.pop();
     for (const line of lines) {
+      // Without an explicit SSE media type, reject foreign content before it
+      // can supply a data line that resembles a completed response.
+      if (verifyFraming && line && !sseLine.test(line)) throw notEventStream();
       if (line.startsWith('data:')) {
         data.push(line.slice(5).replace(/^ /, ''));
       } else if (!line && data.length) {
@@ -97,15 +101,29 @@ async function* events(response) {
     }
   }
   decoder.decode();
+  if (verifyFraming && fragment && !sseLine.test(fragment)) throw notEventStream();
 }
 
+const sseLine = /^(?::|(?:data|event|id|retry)(?::|$))/;
+
 async function readCompletion(response) {
-  if (!/^text\/event-stream(?:\s*;|$)/i.test(response.headers.get('content-type') ?? '')) {
-    throw invalid('The ChatGPT plan route did not return an event stream.');
+  const media = (response.headers.get('content-type') ?? '').split(';', 1)[0].trim().toLowerCase();
+  const verifyFraming = media !== 'text/event-stream';
+  if (verifyFraming && !['', 'text/plain', 'application/octet-stream'].includes(media)) {
+    if (media === 'application/json' || media.endsWith('+json')) {
+      // Some plan errors arrive with HTTP 200. Surface only a recognized
+      // error code, never the provider's free text or a JSON completion.
+      let body;
+      try { body = await readJson(response, 65536); } catch { /* wrong format */ }
+      if (codeMessages.has(body?.error?.code)) throw planError(response, body.error);
+    } else {
+      await response.body?.cancel();
+    }
+    throw notEventStream();
   }
   // Only the completed response authorizes a tool dispatch or supplies a final
   // answer. Earlier items and text deltas may belong to an abandoned generation.
-  for await (const event of events(response)) {
+  for await (const event of events(response, verifyFraming)) {
     switch (event.type) {
       case 'response.incomplete':
         throw invalid('ChatGPT marked this response incomplete. Try a shorter request.');
