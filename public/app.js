@@ -413,6 +413,10 @@ function renderChat() {
   toggle.disabled = busy;
   toggle.textContent = webSearchMode ? 'Back to chat' : 'Web search';
   toggle.setAttribute('aria-expanded', String(webSearchMode));
+  const searchSettings = $('#web-search-settings');
+  searchSettings.hidden = !state.webSearchAvailable || state.webSearchEnabled;
+  searchSettings.disabled = busy;
+  $('#web-command-help').hidden = !state.webSearchEnabled;
   $('#chat-form').hidden = webSearchMode;
   $('#web-search-form').hidden = !webSearchMode;
   $('.commands').hidden = webSearchMode;
@@ -524,7 +528,7 @@ function render() {
     $('#provider-name').textContent = providerLabel(profile.provider) + (state.localOnly ? ' · Local only' : '');
     $('#provider-model').textContent = profile.model;
     $('#provider-usage').hidden = profile.provider !== 'chatgpt-plan';
-    $('.provider').title = [profile.label, providerLabel(profile.provider), profile.model, profile.nativeTools ? 'Native tools enabled' : 'Chat only'].join(' · ');
+    $('.provider').title = [profile.label, providerLabel(profile.provider), profile.model, profile.nativeTools ? 'Native tool calling on' : 'Native tool calling off'].join(' · ');
   });
   $('#profile').disabled = Boolean(sending || state.chatting);
   const pending = state.approvals.filter((a) => a.status === 'pending').length;
@@ -705,6 +709,12 @@ $('#web-search-toggle').addEventListener('click', () => {
   else webSearchMode = true;
   renderChat();
   $(webSearchMode ? '#web-query' : '#message').focus();
+});
+
+$('#web-search-settings').addEventListener('click', () => {
+  if (view === 'chat' && state?.webSearchAvailable && !state.webSearchEnabled && !sending && !state.chatting) {
+    go('settings', true);
+  }
 });
 
 $('#web-search-form').addEventListener('submit', async event => {

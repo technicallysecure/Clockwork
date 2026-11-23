@@ -131,7 +131,7 @@ small { display: block; margin-top: .28rem; }
 .source-controls, .composer-options, .query-controls { display: flex; gap: .6rem; align-items: center; }
 .source-controls { margin-top: .32rem; flex-wrap: wrap; }
 .source-controls .meta { overflow-wrap: anywhere; }
-.source-controls .read-source, #web-search-toggle { min-height: 2rem; padding: .24rem .6rem; font-size: .82rem; }
+.source-controls .read-source, .composer-options > button { min-height: 2rem; padding: .24rem .6rem; font-size: .82rem; }
 .search-composer { padding: .8rem; border: 1px solid #b9c3b7; background: var(--white); border-radius: 1rem; }
 .query-controls { margin-top: .55rem; }
 .query-controls input { min-width: 0; flex: 1; }

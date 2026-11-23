@@ -38,7 +38,7 @@ docker compose exec clockwork node -e "fetch(process.env.CLOCKWORK_LM_BASE_URL+'
 
 ### Search the web
 
-For public web research, open **Web search** in the chat composer and enter the terms you want to send to search engines. Clockwork returns source links and snippets even when the selected model is offline. **Read page** fetches readable text from a result. The deployment and the selected agent profile must permit web search. [Setup, privacy and verification](docs/web-search.md)
+For public web research, type **Search the web for RFC 9309** or `/search RFC 9309` in ordinary chat. You can also use **Web search** below the message box. Each agent searches through its own SearXNG service using DuckDuckGo and Mwmbl. Search needs no separate API key and works with native tool calling off. If search is available but off for your profile, choose **Enable web search** below the message box. Results include source links, even if the selected model is offline. [Setup, privacy and verification](docs/web-search.md)
 
 ### Enable hosted inference
 

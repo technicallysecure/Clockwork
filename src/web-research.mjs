@@ -10,6 +10,42 @@ const schema = (name, maxLength) => ({
 });
 const tool = {effect:'read', network:true, hostedSafe:true, ownerInputOnly:true};
 
+// Only recognize an explicit request at the start of the current owner message.
+// null is ordinary chat; an empty string asks the owner for the public terms.
+export function chatSearchTerms(text) {
+  const slash = /^\/search(?=\s|$)/i.exec(text);
+  if (slash) return text.slice(slash[0].length).trim();
+
+  const request = text.replace(/^(?:(?:can|could|would|will) you +)?(?:please +)?/i, '');
+  const prefix = /^(?:search|browse) (?:online|(?:the )?(?:web|internet))\b/i.exec(request);
+  let topic;
+  if (prefix) {
+    const rest = request.slice(prefix[0].length);
+    topic = /^(?: +(?:for|about|on|to find) +|: *)(.+)$/isu.exec(rest)?.[1] ?? '';
+  } else {
+    const lookup = /^(?:look up|search for) (.+?) (?:online|on the (?:web|internet))[?.!]?$/isu.exec(request)
+      ?? /^use the (?:web|internet) to (?:search for|look up|find) (.+)$/isu.exec(request);
+    if (!lookup) return null;
+    topic = lookup[1];
+  }
+  // Conversational qualifiers and additional instructions need a separate
+  // choice of terms. /search and the search form accept explicit literal terms.
+  if (/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(text)) return '';
+  topic = topic.replace(/[?.!]$/, '').trim();
+  const anotherInstruction = /[;!?]|\.(?:\s|$)|,\s*and\b|\b(?:then|but|and (?:summarize|tell me|use|include|read|send))\b/i;
+  const contextReference = /^(?:it|that|this|them)$|\b(?:my|our|your|previous|earlier|private|saved) (?:\w+ ){0,2}(?:notes?|chats?|conversations?|files?|preferences?|messages?|commitments?|workspace|memory)\b/i;
+  if (anotherInstruction.test(topic) || contextReference.test(topic)) return '';
+  return topic;
+}
+
+export function searchHelp(profile, config) {
+  if (config.localOnly) return 'Web search is disabled in local-only mode.';
+  if (!config.webSearchAvailable) return 'An operator must enable the web search service for this deployment.';
+  if (!profile.webSearchAvailable) return 'An operator must grant the web search tool and permission to this profile.';
+  if (!profile.webSearchEnabled) return 'Open Agent settings, enable web search for this profile, and save. Then send /search followed by your public search terms.';
+  return 'Web search is enabled for this profile. Send /search followed by the exact public terms, say “Search the web for …”, or open Web search in the chat composer.';
+}
+
 export function createWebResearch({db, notebook, search = createWebSearch(), read = readPublicPage}) {
   const sourceById = db.prepare(`SELECT w.title,w.url FROM web_sources w JOIN messages m ON m.id=w.messageId
     WHERE w.id=? AND m.scope=? AND m.profileId=?`);
@@ -29,11 +65,11 @@ export function createWebResearch({db, notebook, search = createWebSearch(), rea
     },
   }];
 
-  async function runSearch(profile, input, caps, completeTurn, signal) {
+  async function runSearch(profile, input, caps, completeTurn, signal, ownerMessage) {
     const query = normalizeSearchQuery(input);
     const options = {allowedTools:['web_search'], ownerInput:true, signal};
     caps.validate(profile, 'web_search', {query}, options);
-    notebook.append(profile, 'user', query, 'web');
+    notebook.append(profile, 'user', ownerMessage ?? query, 'web');
     let results;
     try {
       results = await caps.dispatch(profile, 'web_search', {query}, options);
