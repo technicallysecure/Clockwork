@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { memoryScope } from './context.mjs';
 
 export function badRequest(message, status = 400) {
   return Object.assign(new Error(message), { status });
@@ -89,7 +90,7 @@ export class Notebook {
 
   append(profile, role, content) {
     this.db.prepare('INSERT INTO messages(scope,role,content,profileId,createdAt) VALUES(?,?,?,?,?)')
-      .run(profile.scope, role, content, profile.id, new Date().toISOString());
+      .run(memoryScope(profile), role, content, profile.id, new Date().toISOString());
   }
 
   getSetting(key) {

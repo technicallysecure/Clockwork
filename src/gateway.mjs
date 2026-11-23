@@ -2,7 +2,7 @@ import { badRequest, requiredText } from './store.mjs';
 import { createWebServer } from './web-server.mjs';
 
 const agentId = /^[a-z][a-z0-9-]{0,62}$/;
-const workerRoute = /^\/(?:state|history|settings|profile|chat|workspace(?:\/[A-Za-z0-9_.-]+)?|preferences(?:\/\d+)?|commitments(?:\/\d+)?|jobs(?:\/[\w-]+\/(?:pause|resume|cancel))?|approvals\/[\w-]+\/(?:approve|reject))$/;
+const workerRoute = /^\/(?:state|history|settings|profile|chat|plan\/(?:status|models|select|renew|signout)|workspace(?:\/[A-Za-z0-9_.-]+)?|preferences(?:\/\d+)?|commitments(?:\/\d+)?|jobs(?:\/[\w-]+\/(?:pause|resume|cancel))?|approvals\/[\w-]+\/(?:approve|reject))$/;
 const legacyRoute = /^\/(?:state|history|profile|chat|preferences|commitments|jobs|approvals)(?:\/|$)/;
 
 function remoteClient({id, url, token}) {
@@ -23,9 +23,9 @@ function remoteClient({id, url, token}) {
       if (method !== 'GET') {
         headers['content-type'] = 'application/json';
         headers['x-clockwork-request'] = '1';
-        if (profile !== undefined) headers['x-clockwork-profile'] = profile;
-        if (revision !== undefined) headers['x-clockwork-revision'] = revision;
       }
+      if (profile !== undefined) headers['x-clockwork-profile'] = profile;
+      if (revision !== undefined) headers['x-clockwork-revision'] = revision;
       let response, data;
       try {
         response = await fetch(destination, {
@@ -43,7 +43,7 @@ function remoteClient({id, url, token}) {
   };
 }
 
-export function fleetRouter(clients) {
+export function fleetRouter(clients, planCallback) {
   const directory = new Map();
   for (const client of clients) {
     if (!agentId.test(client.id) || directory.has(client.id)) throw Error('Invalid or duplicate worker ID.');
@@ -102,6 +102,13 @@ export function fleetRouter(clients) {
     }
     if (path === '/dispatch' && method === 'POST') return dispatch(body);
     const scoped = /^\/agents\/([a-z][a-z0-9-]*)\/(.+)$/.exec(path);
+    if (method === 'POST' && scoped?.[2] === 'plan/start') {
+      if (!planCallback) throw badRequest('The loopback sign-in listener is disabled.', 403);
+      const id = scoped[1];
+      const {url, state} = await call(id, {...request, path:'/plan/start'});
+      planCallback.track(id, state, query => call(id, {method:'POST', path:'/plan/callback', body:{query}}));
+      return {url};
+    }
     if (scoped && workerRoute.test('/' + scoped[2])) return call(scoped[1], {...request, path:'/' + scoped[2]});
     // Earlier single-agent clients refer exclusively to the original agent.
     // An unversioned mutation can only reach its original settings revision.
@@ -112,6 +119,6 @@ export function fleetRouter(clients) {
   };
 }
 
-export function createGatewayServer({root, password, secureCookie, agents}) {
-  return createWebServer({root, password, secureCookie, route:fleetRouter(agents.map(remoteClient))});
+export function createGatewayServer({root, password, secureCookie, agents, planCallback}) {
+  return createWebServer({root, password, secureCookie, route:fleetRouter(agents.map(remoteClient), planCallback)});
 }

@@ -2,15 +2,16 @@
 
 ## Provider capability matrix
 
-| Clockwork capability | Hosted OpenAI | LM Studio |
-| --- | --- | --- |
-| Inference | Stateless `POST /v1/chat/completions` over HTTPS to `api.openai.com`, with `store: false` | Stateless `POST /v1/chat/completions` to the configured trusted endpoint |
-| Chat and scoped history | Supported for a Chat Completions model accepting system messages | Supported for a loaded chat model accepting system messages |
-| Native function calls | Enabled for the bundled `gpt-4.1-mini` profile. Changing its model defaults calls to off | Off by default. Enable after verifying the specific model and chat template |
-| Structured response formats | Unused | Unused |
-| Memory, schedules, delivery, approvals | Local SQLite and application services | Same services, including with native calls disabled |
-| Credentials | Per-agent API key in **Agent settings**. Personal can also use `OPENAI_API_KEY_FILE` or `OPENAI_API_KEY` | Per-agent token in **Agent settings**. Personal can also use `LM_STUDIO_API_KEY_FILE` or `LM_STUDIO_API_KEY`. Anonymous access works when the server allows it. |
-| Failure | Show a sanitized failure for this provider | Show a sanitized failure for this provider |
+| Capability | OpenAI API key | LM Studio | Use my ChatGPT plan |
+| --- | --- | --- | --- |
+| Inference | Chat Completions, storage disabled | Chat Completions at a trusted private endpoint | Public Responses API with storage disabled and SSE through completion |
+| Model selection | Configured model ID | Configured loaded model ID | Visible models from the active registration's live catalog |
+| Tools | Native functions for supported models | Off by default, depends on model and template | Opt-in, namespaced application functions and stateless result replay |
+| Provider context | API-key profile and scope | Local profile and scope | Plan profile, scope and account/workspace registration |
+| Credentials | Agent-specific API key | Optional token | Renewable OAuth grant in a dedicated protected store |
+| Errors | Selected provider error | Selected provider error | Consent, eligibility, capability, limits and terminal stream errors stop the turn |
+
+All three use the worker's SQLite store, scheduler, approvals and inbox. Clockwork uses text input and output. Structured output formats and hosted tools are outside this integration. [Plan route setup and limitations](chatgpt-plan.md)
 
 Both providers document the Chat Completions endpoint. OpenAI lists function calling for GPT‑4.1 mini. LM Studio documents variation in tool support among models and templates. Clockwork sends tools only when the selected profile enables native calls. It executes validated native requests through the registry. Prose, including JSON-looking prose, stays in the conversation. [OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create) · [GPT‑4.1 mini](https://developers.openai.com/api/docs/models/gpt-4.1-mini) · [LM Studio compatibility](https://lmstudio.ai/docs/developer/openai-compat) · [LM Studio tool use](https://lmstudio.ai/docs/developer/openai-compat/tools)
 
@@ -36,9 +37,11 @@ The model adapter sends the credential in the Authorization header. The settings
 
 The LM Studio adapter accepts `localhost`, `host.docker.internal`, loopback addresses, RFC 1918 IPv4 addresses, and IPv6 unique-local addresses. Hostname resolution is checked at the socket connection. The adapter follows zero redirects and makes a direct connection. For a server on another machine, set its trusted private IP and protect the link with your private network or HTTPS.
 
-Within each agent, the two general profiles share its `personal` history and memory scope. Each worker has a separate database, so the same scope name on two workers identifies different records. With local-only mode disabled, selecting the hosted profile and sending a chat turn sends recent conversation and saved context from that worker's scope to OpenAI. The sample Focus planner has its own `focus` scope within each worker.
+Within each agent, a scope such as `personal` is partitioned by provider. Plan data also belongs to the selected registration. The worker reads history, goals, preferences, commitments and workspace files from the current context before constructing a request. Existing records remain in the local namespace. The sample Focus planner has its own `focus` memory scope. Schedules stay attached to their approved context after a switch or restart.
 
 ## Try the installed extension
+
+The registry requires an operator-installed tool to declare `hostedSafe: true` before a hosted model can use it. Set this only for tools whose returned data is computed from the current request or read from the supplied context. The bundled `estimate_blocks` is a pure calculation. The profile's tool list, operator permissions, argument schema and approval rules still apply.
 
 1. Select the **Focus planner** profile. It requests `estimate_blocks`, implemented in `extensions/estimate-blocks.mjs`.
 2. Open **Follow-ups** and create a one-time check. Choose `estimate_blocks` as the allowed tool, enter `{"minutes":80,"blockMinutes":25}` as its arguments and select **After each successful run**.

@@ -1,6 +1,8 @@
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { createPlanCallback } from './plan-callback.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const env = process.env;
@@ -39,10 +41,17 @@ function configuredAgents() {
   return agents;
 }
 
-let db, runtime, server;
+let db, runtime, server, planAuth;
+const callbackPort = env.CLOCKWORK_PLAN_CALLBACK_PORT;
+const enablePlan = env.CLOCKWORK_LOCAL_ONLY === 'false' && Boolean(callbackPort);
+if (enablePlan && (!/^\d{1,5}$/.test(callbackPort) || Number(callbackPort) < 1 || Number(callbackPort) > 65535)) {
+  throw Error('Choose a valid ChatGPT loopback callback port.');
+}
+const redirectUri = enablePlan && `http://127.0.0.1:${Number(callbackPort)}/auth/callback`;
+const planCallback = enablePlan && role !== 'worker' ? createPlanCallback(redirectUri) : undefined;
 if (role === 'gateway') {
   const { createGatewayServer } = await import('./gateway.mjs');
-  server = await createGatewayServer({root, password: ownerPassword(), secureCookie, agents: configuredAgents()});
+  server = await createGatewayServer({root, password: ownerPassword(), secureCookie, agents: configuredAgents(), planCallback});
 } else if (role === 'worker' || role === 'standalone') {
   const { openStore } = await import('./store.mjs');
   const { createRuntime } = await import('./runtime.mjs');
@@ -54,21 +63,35 @@ if (role === 'gateway') {
   const databasePath = resolve(env.CLOCKWORK_DB ?? 'data/clockwork.sqlite');
   const workspaceDir = resolve(env.CLOCKWORK_WORKSPACE ?? resolve(dirname(databasePath), 'workspace'));
   db = openStore(databasePath);
-  runtime = await createRuntime({db, root, env, workspaceDir});
+  if (enablePlan) {
+    const { createPlanAuth } = await import('./plan-auth.mjs');
+    const agentId = env.CLOCKWORK_AGENT_ID ?? 'personal';
+    const directory = env.CLOCKWORK_PLAN_VAULT ?? resolve(homedir(), '.clockwork', 'plan', agentId);
+    planAuth = createPlanAuth({directory, agentId, redirectUri});
+  }
+  runtime = await createRuntime({db, root, env, workspaceDir, planAuth});
   bindWorkspace(workspaceDir, runtime.agentInfo().id);
-  server = createHttpServer({runtime, root, workspaceDir, ...auth});
+  server = createHttpServer({runtime, root, workspaceDir, planCallback, ...auth});
 } else {
   throw new Error('Unknown CLOCKWORK_ROLE. Choose gateway, worker or standalone.');
 }
 
+if (planCallback) {
+  // The container's dedicated callback socket is published solely to Windows loopback.
+  // Standalone Node always binds the socket directly to loopback.
+  await new Promise((done, fail) => planCallback.server.once('error', fail)
+    .listen(Number(callbackPort), role === 'gateway' ? host : '127.0.0.1', done));
+}
 server.listen(port, host, () => {
   console.log(`Clockwork listening on ${host}:${server.address().port} (${role})`);
   runtime?.scheduler.start();
 });
 async function shutDown() {
+  planCallback?.server.close();
   const drained = new Promise(resolve => server.close(resolve));
   await runtime?.scheduler.stop();
   await drained;
+  planAuth?.close();
   db?.close();
 }
 process.once('SIGTERM', shutDown);

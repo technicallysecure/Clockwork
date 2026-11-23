@@ -31,6 +31,14 @@ $slots = (Get-ContainerSetting $gateway 'CLOCKWORK_AGENT_SLOTS').Split(',')
 if ($workers.Count -ne $slots.Count) { throw 'Some registered workers are missing or the project has extra workers.' }
 $gatewayBindings = @($gateway.HostConfig.PortBindings.'8787/tcp')
 if ($gatewayBindings.Count -ne 1 -or $gatewayBindings[0].HostIp -ne '127.0.0.1') { throw 'Gateway must publish to loopback.' }
+$callbackPort = Get-ContainerSetting $gateway 'CLOCKWORK_PLAN_CALLBACK_PORT'
+$allowedPorts = @('8787/tcp')
+if ($callbackPort) { $allowedPorts += "$callbackPort/tcp" }
+foreach ($port in $gateway.HostConfig.PortBindings.PSObject.Properties) {
+    if ($port.Name -notin $allowedPorts -or $port.Value.Count -ne 1 -or $port.Value[0].HostIp -ne '127.0.0.1') {
+        throw 'Unexpected published gateway port.'
+    }
+}
 Test-SecretMounts $gateway (@('owner_password') + @($slots | ForEach-Object { "worker_$_" }))
 if (@($gateway.Mounts | Where-Object { $_.Destination -ne '/tmp' -and -not $_.Destination.StartsWith('/run/secrets/') }).Count) {
     throw 'Gateway has an unexpected mount.'
@@ -61,14 +69,16 @@ foreach ($worker in $workers) {
     $secrets = @("worker_$id")
     if ($id -eq 'personal') { $secrets += @('lm_token', 'openai_key') }
     Test-SecretMounts $worker $secrets
-    foreach ($destination in @('/data', '/workspace')) {
+    $destinations = @('/data', '/workspace')
+    if ($callbackPort) { $destinations += '/plan-secrets' }
+    foreach ($destination in $destinations) {
         $mounts = @($worker.Mounts | Where-Object { $_.Destination -eq $destination })
         if ($mounts.Count -ne 1 -or $mounts[0].Type -ne 'volume' -or -not $mounts[0].RW -or
             $volumeNames.ContainsKey($mounts[0].Name)) { throw "Worker $id needs a dedicated volume for $destination." }
         $volumeNames[$mounts[0].Name] = $true
     }
     foreach ($mount in $worker.Mounts) {
-        if ($mount.Destination -in @('/data','/workspace','/tmp') -or $mount.Destination.StartsWith('/run/secrets/')) { continue }
+        if ($mount.Destination -in $destinations -or $mount.Destination -eq '/tmp' -or $mount.Destination.StartsWith('/run/secrets/')) { continue }
         if ($mount.Destination -notin @('/app/config','/app/extensions') -or $mount.RW) {
             throw "Unexpected mount on worker $id."
         }

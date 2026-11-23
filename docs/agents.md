@@ -50,6 +50,8 @@ Each database and workspace records its owning agent ID. The worker checks both 
 
 ## Backup and operations
 
+With the plan Compose file enabled, each worker also owns a private `/plan-secrets` named volume. Back up or restore this whole volume securely with the worker stopped if you need to retain its registration and installation identity. Keep it out of the project directory and ordinary data exports. On native Windows, restoration of the protected key also needs its Windows user account. [ChatGPT plan operations](chatgpt-plan.md)
+
 Back up both volumes of each agent and include the operator configuration and routing secrets in a protected backup. Each agent's data directory contains private conversations, commitments, settings and the key file for credentials entered in the UI. Restore the entire data directory together. For a consistent per-agent copy, stop only that worker, copy its volumes, and restart it. This example uses a new backup directory in the project root.
 
 ```powershell

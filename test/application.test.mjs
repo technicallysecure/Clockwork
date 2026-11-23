@@ -110,16 +110,19 @@ test('switching providers keeps history, commitments and jobs and fences a stale
   await app.request('/api/profile', {id:'hosted'});
   const state = await app.state();
   assert.equal(state.activeProfile, 'hosted');
-  assert.equal(state.messages.length, 2);
-  assert.equal(state.commitments[0].text, 'Read the brief');
+  assert.deepEqual(state.messages, []);
+  assert.deepEqual(state.commitments, []);
   assert.equal(state.jobs.length, 1);
   assert.equal(state.jobs[0].profileId, 'local');
   assert.equal((await app.request('/api/chat', {text:'local-only draft'})).status, 409);
   assert.equal(app.calls.length, 1);
   await app.request('/api/chat', {text:'Continue with the brief'}, {profile:'hosted'});
   assert.deepEqual(app.calls.map(c=>c[0].provider), ['lmstudio','openai']);
-  assert.match(JSON.stringify(app.calls[1][1]), /Start here/);
-  assert.doesNotMatch(JSON.stringify(app.calls[1][1]), /local-only draft/);
+  assert.doesNotMatch(JSON.stringify(app.calls[1][1]), /Start here|Read the brief|local-only draft/);
+  await app.request('/api/profile', {id:'local'}, {profile:'hosted'});
+  const local = await app.state();
+  assert.equal(local.messages.length, 2);
+  assert.equal(local.commitments[0].text, 'Read the brief');
 });
 
 test('provider failure retains the attempted turn and the next chat still uses the local profile', async t => {

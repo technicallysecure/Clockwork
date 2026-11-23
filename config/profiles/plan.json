@@ -1,0 +1,11 @@
+{
+  "id": "plan",
+  "label": "Use my ChatGPT plan",
+  "instructions": "Help the owner think, plan, and follow through. Be concise and specific.",
+  "provider": "chatgpt-plan",
+  "model": "choose-in-settings",
+  "baseUrl": "https://api.openai.com/v1",
+  "nativeTools": false,
+  "scope": "personal",
+  "tools": ["estimate_blocks", "list_commitments"]
+}

@@ -1,0 +1,27 @@
+# Opt in alongside compose.yaml. Workers store grants on separate private volumes.
+x-plan: &plan
+  CLOCKWORK_PLAN_CALLBACK_PORT: ${CLOCKWORK_PLAN_CALLBACK_PORT:-12003}
+  CLOCKWORK_PLAN_VAULT: /plan-secrets
+services:
+  gateway:
+    environment:
+      CLOCKWORK_LOCAL_ONLY: ${CLOCKWORK_LOCAL_ONLY:-true}
+      CLOCKWORK_PLAN_CALLBACK_PORT: ${CLOCKWORK_PLAN_CALLBACK_PORT:-12003}
+    ports:
+      - "127.0.0.1:${CLOCKWORK_PLAN_CALLBACK_PORT:-12003}:${CLOCKWORK_PLAN_CALLBACK_PORT:-12003}"
+  clockwork:
+    environment: *plan
+    volumes:
+      - personal_plan:/plan-secrets
+  worker-agent-2:
+    environment: *plan
+    volumes:
+      - agent-2_plan:/plan-secrets
+  worker-agent-3:
+    environment: *plan
+    volumes:
+      - agent-3_plan:/plan-secrets
+volumes:
+  personal_plan:
+  agent-2_plan:
+  agent-3_plan:

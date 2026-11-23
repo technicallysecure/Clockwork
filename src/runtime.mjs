@@ -1,11 +1,13 @@
 import { loadConfig, loadExtensions } from './config.mjs';
 import { createCapabilities } from './capabilities.mjs';
 import { createProvider } from './providers.mjs';
+import { createPlanProvider } from './plan-provider.mjs';
 import { createScheduler } from './scheduler.mjs';
 import { Notebook, badRequest, requiredText } from './store.mjs';
 import { createAgentSettings } from './agent-settings.mjs';
 import { createAssignmentRunner } from './assignments.mjs';
 import { createWorkspace, workspaceTools } from './workspace.mjs';
+import { memoryScope } from './context.mjs';
 
 const explicitCommand = /^\/(remember|commit)(?:\s+([\s\S]*))?$/i;
 const systemRules = [
@@ -33,8 +35,9 @@ function contextEntries(rows) {
   return result;
 }
 
-function inferenceHistory(notebook, profile, agent) {
-  const entries = notebook.messages(profile.scope, 64);
+function inferenceHistory(notebook, profile, goal) {
+  const scope = memoryScope(profile);
+  const entries = notebook.messages(scope, 64);
   const current = entries.pop();
   // Only completed conversation pairs go back to inference. A failed turn or
   // a local command stays visible in history without disrupting model templates.
@@ -55,43 +58,81 @@ function inferenceHistory(notebook, profile, agent) {
     remaining -= user.length + assistant.length;
   }
   const context = {
-    preferences: contextEntries(notebook.memories(profile.scope, 'preference')),
-    open_commitments: contextEntries(notebook.memories(profile.scope, 'commitment').filter(row => !row.done)),
+    preferences: contextEntries(notebook.memories(scope, 'preference')),
+    open_commitments: contextEntries(notebook.memories(scope, 'commitment').filter(row => !row.done)),
   };
   return [
-    { role: 'system', content: `${systemRules}\n\nOwner-configured agent goal:\n${agent.goal}\n\nProfile instructions:\n${profile.instructions}` },
+    { role: 'system', content: `${systemRules}\n\nOwner-configured agent goal:\n${goal}\n\nProfile instructions:\n${profile.instructions}` },
     ...recent,
     { role: 'user', content: JSON.stringify({saved_context:context, owner_request:current.content}) },
   ];
 }
 
-export async function createRuntime({ db, root, env = process.env, config = loadConfig({root, env}), provider,
+export async function createRuntime({ db, root, env = process.env, config = loadConfig({root, env}), provider, planAuth, fetchImpl,
   extensions, workspaceDir, workspace = workspaceDir ? createWorkspace(workspaceDir) : undefined, schedulerOptions = {} }) {
   const notebook = new Notebook(db);
-  const agentSettings = createAgentSettings({db, notebook, config, env});
+  const agentSettings = createAgentSettings({db, notebook, config, env, getPlanAccountId:() => {
+    // A disconnected registration still owns its conversation. A damaged
+    // vault must not prevent listing or using the worker's other providers.
+    try { return planAuth?.status().activeId ?? null; }
+    catch { return null; }
+  }});
   const {active, getProfile} = agentSettings;
   const installedTools = extensions ?? await loadExtensions(config);
   const capabilities = createCapabilities({
-    db, config, extensions: workspace ? [...installedTools, ...workspaceTools(workspace)] : installedTools,
+    db, config, getProfile, extensions: workspace ? [...installedTools, ...workspaceTools(workspace)] : installedTools,
     readCommitments: scope => notebook.memories(scope, 'commitment').filter(row => !row.done),
   });
-  const inference = provider ?? createProvider({config, env, credentialFor:agentSettings.credentialFor});
+  const planProvider = !config.localOnly && planAuth && createPlanProvider({
+    auth:planAuth, fetchImpl, timeoutMs:config.providerTimeoutMs, localOnly:config.localOnly,
+  });
+  const inference = provider ?? createProvider({config, env, fetchImpl, planProvider, credentialFor:agentSettings.credentialFor});
   const scheduler = createScheduler({ db, capabilities, getProfile, ...schedulerOptions });
   let chatting = false;
+  let changingAccount = false;
+
+  async function planRequest(action, body = {}) {
+    agentSettings.ready();
+    if (config.localOnly || !planProvider) throw badRequest('ChatGPT plan access is disabled for this worker.', 403);
+    if (action === 'status') {
+      const status = planAuth.status();
+      return {...status, lastIssue:planProvider.lastIssue(status.activeId)};
+    }
+    if (action === 'models') return {models:await planProvider.listModels()};
+    if (chatting || changingAccount) throw badRequest('Wait for the current operation before changing ChatGPT accounts.', 409);
+    const fields = {start:['accountId','consent'], callback:['query'], select:['accountId'], renew:['accountId'], signout:['accountId']};
+    if (!Object.hasOwn(fields, action) || Object.keys(body).some(k => !fields[action].includes(k)) ||
+        ('accountId' in body && (typeof body.accountId !== 'string' || !body.accountId || body.accountId.length > 512)) ||
+        ('consent' in body && typeof body.consent !== 'boolean')) throw badRequest('Invalid ChatGPT connection request.');
+    if (action === 'start') return planAuth.begin(body);
+    changingAccount = true;
+    try {
+      if (action === 'select') return planAuth.select(body.accountId);
+      let status;
+      if (action === 'callback') status = await planAuth.finish(new URLSearchParams(body.query));
+      else if (action === 'renew') status = await planAuth.renew(body.accountId);
+      else status = await planAuth.signOut(body.accountId);
+      planProvider.clearIssue(body.accountId ?? status.activeId);
+      return status;
+    } finally {
+      db.prepare('UPDATE agent_identity SET revision=revision+1 WHERE singleton=1').run();
+      changingAccount = false;
+    }
+  }
 
   function selectProfile(id) {
-    if (chatting) throw badRequest('Wait for the current reply before switching profiles.', 409);
+    if (chatting || changingAccount) throw badRequest('Wait for the current operation before switching profiles.', 409);
     return agentSettings.selectProfile(id);
   }
 
   function updateSettings(input) {
-    if (chatting) throw badRequest('Wait for the current reply before changing settings.', 409);
+    if (chatting || changingAccount) throw badRequest('Wait for the current operation before changing settings.', 409);
     return agentSettings.update(input);
   }
 
   async function chat(input) {
     agentSettings.ready();
-    if (chatting) throw badRequest('Another reply is in progress.', 409);
+    if (chatting || changingAccount) throw badRequest('Another operation is in progress.', 409);
     const text = requiredText(input, 'Message', 8000);
     const profile = active();
     const command = explicitCommand.exec(text);
@@ -100,7 +141,7 @@ export async function createRuntime({ db, root, env = process.env, config = load
       const entry = requiredText(command[2], kind, 2000);
       db.exec('BEGIN IMMEDIATE');
       try {
-        notebook.add(profile.scope, kind, entry);
+        notebook.add(memoryScope(profile), kind, entry);
         notebook.append(profile, 'user', text);
         notebook.append(profile, 'assistant', `Saved your ${kind}.`);
         db.exec('COMMIT');
@@ -113,7 +154,7 @@ export async function createRuntime({ db, root, env = process.env, config = load
     chatting = true;
     try {
       notebook.append(profile, 'user', text);
-      const messages = inferenceHistory(notebook, profile, agentSettings.info());
+      const messages = inferenceHistory(notebook, profile, agentSettings.goalFor(profile));
       const tools = profile.nativeTools ? capabilities.list(profile) : [];
       const allowedTools = tools.map(tool => tool.name);
       const signal = AbortSignal.timeout(60000);
@@ -145,7 +186,7 @@ export async function createRuntime({ db, root, env = process.env, config = load
           reply = 'The action is waiting for your decision. Open Inbox to review its destination and arguments.';
         } else {
           signal.throwIfAborted();
-          const summary = await inference.complete(profile, messages, [], {signal});
+          const summary = await inference.complete(profile, messages, [], {signal, continuation:first.continuation});
           reply = summary.text;
         }
       }
@@ -167,7 +208,8 @@ export async function createRuntime({ db, root, env = process.env, config = load
   function state() {
     agentSettings.ready();
     const profile = active();
-    const messages = notebook.messages(profile.scope, 101);
+    const scope = memoryScope(profile);
+    const messages = notebook.messages(scope, 101);
     return {
       agent: agentSettings.info(), settingsRevision: agentSettings.revision(),
       profiles: config.profiles.map(base => getProfile(base.id)).map(p => ({
@@ -176,7 +218,7 @@ export async function createRuntime({ db, root, env = process.env, config = load
       })),
       activeProfile: profile.id, localOnly: config.localOnly, chatting,
       messages: messages.slice(-100), hasEarlier: messages.length > 100,
-      preferences: notebook.memories(profile.scope, 'preference'), commitments: notebook.memories(profile.scope, 'commitment'),
+      preferences: notebook.memories(scope, 'preference'), commitments: notebook.memories(scope, 'commitment'),
       jobs: scheduler.list(), runs: scheduler.runs(), notifications: scheduler.notifications(), approvals: capabilities.approvals(),
     };
   }
@@ -189,5 +231,5 @@ export async function createRuntime({ db, root, env = process.env, config = load
   }});
   return { active, selectProfile, getProfile, state, chat, assign, notebook, scheduler, capabilities, workspace,
     agentInfo:agentSettings.info, initializeAgent:agentSettings.initialize, settings:agentSettings.settings,
-    settingsRevision:agentSettings.revision, updateSettings };
+    settingsRevision:agentSettings.revision, updateSettings, planRequest };
 }

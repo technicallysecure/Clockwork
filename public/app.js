@@ -3,7 +3,7 @@
 const $ = (selector, parent = document) => parent.querySelector(selector);
 const $$ = (selector, parent = document) => [...parent.querySelectorAll(selector)];
 const labels = { agents: 'Agents', chat: 'Conversation', memory: 'Memory', schedules: 'Follow-ups', inbox: 'Inbox', files: 'Workspace files', settings: 'Agent settings' };
-const providerLabel = (id) => ({ openai: 'OpenAI', lmstudio: 'LM Studio' }[id] || id);
+const providerLabel = (id) => ({ openai: 'OpenAI API key', lmstudio: 'LM Studio', 'chatgpt-plan':'ChatGPT plan' }[id] || id);
 let state = null;
 let view = 'chat';
 let memoryView = 'preferences';
@@ -86,9 +86,9 @@ async function requestJSON(path, { method = 'GET', body, profile, revision } = {
   if (method !== 'GET') {
     headers['Content-Type'] = 'application/json';
     headers['X-Clockwork-Request'] = '1';
-    if (profile) headers['X-Clockwork-Profile'] = profile;
-    if (Number.isInteger(revision)) headers['X-Clockwork-Revision'] = String(revision);
   }
+  if (profile) headers['X-Clockwork-Profile'] = profile;
+  if (Number.isInteger(revision)) headers['X-Clockwork-Revision'] = String(revision);
   let response;
   try {
     response = await fetch(path, {
@@ -215,8 +215,14 @@ async function refresh({ report = true } = {}) {
       go('chat');
     }
     else render();
+    if (prior && view === 'files' && (prior.activeProfile !== data.activeProfile || prior.settingsRevision !== data.settingsRevision)) {
+      $('#file-list').replaceChildren();
+      loadFiles();
+    }
     if (prior && view === 'settings' && prior.settingsRevision !== data.settingsRevision) {
-      $('#settings-status').textContent = 'Agent settings changed. Reload to edit the latest version.';
+      const profile = settingsProfile();
+      if (profile?.provider === 'chatgpt-plan') loadSettings(profile.id);
+      else $('#settings-status').textContent = 'Agent settings changed. Reload to edit the latest version.';
     }
     if (!prior) $('#message').focus();
   } catch (error) {
@@ -327,7 +333,7 @@ function renderMemory() {
   $('#memory-description').textContent = preferences ? 'Preferences you explicitly saved for future conversations.' : 'Track the commitments you want Clockwork to remember.';
   $('#add-memory span').textContent = preferences ? 'Add preference' : 'Add commitment';
   const scope = activeProfile()?.scope || '';
-  $('#scope-label').textContent = 'Memory scope · ' + scope;
+  $('#scope-label').textContent = providerLabel(activeProfile()?.provider) + ' · ' + scope;
   changed('memory-list', [memoryView, scope, state[memoryView]], () => {
     listRows('#memory-list', state[memoryView], preferences ? 'bookmark' : 'task',
       preferences ? 'No saved preferences in this scope.' : 'No commitments in this scope.', (item) => {
@@ -422,6 +428,7 @@ function render() {
     const profile = activeProfile();
     $('#provider-name').textContent = providerLabel(profile.provider) + (state.localOnly ? ' · Local only' : '');
     $('#provider-model').textContent = profile.model;
+    $('#provider-usage').hidden = profile.provider !== 'chatgpt-plan';
     $('.provider').title = [profile.label, providerLabel(profile.provider), profile.model, profile.nativeTools ? 'Native tools enabled' : 'Chat only'].join(' · ');
   });
   $('#profile').disabled = Boolean(sending || state.chatting);
@@ -526,8 +533,8 @@ $('#profile').addEventListener('change', (event) => {
   $('#profile').value = state.activeProfile;
   if (!next || next.id === state.activeProfile) return;
   const principal = providerLabel(next.provider) + ' (' + next.model + ')';
-  confirmAction('Switch agent profile?', 'Your next chat sends conversation history and saved memory from the ' + next.scope +
-    ' scope to ' + principal + '. Existing follow-ups keep their scheduled profile.',
+  confirmAction('Switch agent profile?', 'Your next chat uses ' + principal + '. ' + contextDescription(next) +
+    ' Existing follow-ups keep their scheduled profile.',
     'Switch to ' + next.label, false, async (dialog, profile) => {
       switchingTo = next.id;
       try { await mutate('/profile', { id: next.id }, { dialog, profile }); }
@@ -653,7 +660,7 @@ $('#new-job').addEventListener('click', openJob);
 $('#dismiss-notice').addEventListener('click', () => notice(''));
 $$('[data-close]').forEach((button) => button.addEventListener('click', () => button.closest('dialog').close()));
 $$('dialog').forEach((dialog) => dialog.addEventListener('cancel', (event) => {
-  if ($('form', dialog).getAttribute('aria-busy') === 'true') event.preventDefault();
+  if ($('form', dialog)?.getAttribute('aria-busy') === 'true') event.preventDefault();
 }));
 $$('[data-shortcut]').forEach((button) => button.addEventListener('click', () => {
   if (button.dataset.shortcut === 'job') openJob();

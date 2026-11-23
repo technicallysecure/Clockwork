@@ -1,4 +1,5 @@
 export default {
+  hostedSafe: true,
   name: 'estimate_blocks',
   description: 'Divide available minutes into whole focus blocks and remaining minutes.',
   permissions: ['time.estimate'],

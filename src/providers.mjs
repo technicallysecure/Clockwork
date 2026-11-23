@@ -23,6 +23,11 @@ export function providerEndpoint(profile, localOnly) {
     throw failure('Invalid inference base URL.');
   }
   if (url.username || url.password || url.search || url.hash) throw failure('Invalid inference base URL.');
+  if (profile.provider === 'chatgpt-plan') {
+    if (localOnly) throw failure('Hosted inference is disabled in local-only mode.', 403);
+    if (url.href !== 'https://api.openai.com/v1') throw failure('ChatGPT plan requests require the public Responses API.');
+    return new URL('https://api.openai.com/v1/responses');
+  }
   if (profile.provider === 'openai') {
     if (localOnly) throw failure('Hosted inference is disabled in local-only mode.', 403);
     if (url.origin !== 'https://api.openai.com') throw failure('Hosted inference requires https://api.openai.com.');
@@ -92,7 +97,8 @@ function secret(env, name) {
 }
 
 export function deploymentCredential(env, provider) {
-  return secret(env, provider === 'lmstudio' ? 'LM_STUDIO_API_KEY' : 'OPENAI_API_KEY');
+  if (provider === 'lmstudio') return secret(env, 'LM_STUDIO_API_KEY');
+  if (provider === 'openai') return secret(env, 'OPENAI_API_KEY');
 }
 
 function parseReply(raw, toolNames) {
@@ -129,10 +135,15 @@ function parseReply(raw, toolNames) {
   return {text, calls};
 }
 
-export function createProvider({config, env = process.env, fetchImpl, credentialFor = profile => deploymentCredential(env, profile.provider)}) {
+export function createProvider({config, env = process.env, fetchImpl, planProvider, credentialFor = profile => deploymentCredential(env, profile.provider)}) {
   return {
-    async complete(profile, messages, tools = [], {signal} = {}) {
+    async complete(profile, messages, tools = [], options = {}) {
       const url = providerEndpoint(profile, config.localOnly);
+      if (profile.provider === 'chatgpt-plan') {
+        if (!planProvider) throw failure('Configure Sign in with ChatGPT on this worker.', 503);
+        return planProvider.complete(profile, messages, tools, options);
+      }
+      const {signal} = options;
       const local = profile.provider === 'lmstudio';
       const token = credentialFor(profile);
       if (!local && !token) throw failure('Configure the OpenAI API key to use hosted inference.');

@@ -20,7 +20,7 @@ function fixture(t, { file = ':memory:', clock = { time: start }, read = () => (
   db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=2000');
   const getProfile = id => {
     if (id !== 'local') throw Object.assign(new Error('Unknown profile'), { status: 400 });
-    return { id, scope: 'personal' };
+    return { id, scope: 'personal', provider: 'lmstudio' };
   };
   const calls = [];
   const capabilities = {

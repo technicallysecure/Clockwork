@@ -11,6 +11,11 @@
       "tools": ["list_commitments", "list_workspace", "read_workspace"],
       "permissions": ["commitments.read", "workspace.read"]
     },
+    "plan": {
+      "scope": "personal",
+      "tools": ["estimate_blocks", "list_commitments"],
+      "permissions": ["time.estimate", "commitments.read"]
+    },
     "focus": {
       "scope": "focus",
       "tools": ["list_commitments", "estimate_blocks", "list_workspace", "read_workspace"],
