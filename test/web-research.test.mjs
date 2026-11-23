@@ -50,6 +50,63 @@ function configure(runtime, id, enabled, changes = {}) {
     profileId:p.id, model:p.model, baseUrl:p.baseUrl, nativeTools:p.nativeTools, webSearchEnabled:enabled, ...changes});
 }
 
+test('ordinary chat runs explicit web searches on a ChatGPT plan with native tools off', async t => {
+  const {runtime, searches, turns} = await fixture(t, {planAuth:{
+    status:() => ({activeId:'fixture-account', planEnabled:true}),
+  }});
+  configure(runtime, 'plan', true, {nativeTools:false, goal:privateMarker});
+  await runtime.chat('/remember ' + privateMarker);
+  await runtime.chat('An earlier private conversation ' + privateMarker);
+  const ordinaryTurns = turns.length;
+  for (const text of ['Please search the internet for ' + query, '/search ' + query]) {
+    await runtime.chat(text);
+    const answer = runtime.state().messages.at(-1);
+    assert.match(answer.content, /SUMMARY_FINISHED/);
+    assert.deepEqual(answer.sources?.map(source => source.url), [result.url, secondResult.url]);
+  }
+  assert.deepEqual(searches, [query, query]);
+  const research = turns.slice(ordinaryTurns);
+  assert.equal(research.length, 2);
+  for (const turn of research) {
+    assert.equal(turn.provider, 'chatgpt-plan');
+    assert.deepEqual(turn.tools, []);
+    assert.equal(JSON.parse(turn.messages.at(-1).content).question, query);
+    assert.doesNotMatch(JSON.stringify(turn.messages), /PRIVATE_CLOCKWORK_RECORD/);
+  }
+});
+
+test('chat explains how to search when terms, profile permission, or deployment access are missing', async t => {
+  const {runtime, searches, turns} = await fixture(t);
+  assert.match(await runtime.chat('Search the web for ' + query), /settings/i);
+  configure(runtime, 'local', true, {nativeTools:false});
+  assert.match(await runtime.chat('Can you search the internet?'), /terms|query|\/search/i);
+  assert.deepEqual(searches, []);
+  assert.deepEqual(turns, []);
+
+  const unavailable = await fixture(t, {env:{CLOCKWORK_WEB_SEARCH:'false'}});
+  assert.match(await unavailable.runtime.chat('/search ' + query), /deploy|operator|administrator|worker/i);
+  assert.deepEqual(unavailable.searches, []);
+  assert.deepEqual(unavailable.turns, []);
+});
+
+test('mentions, negations, and compound or multiline chat do not send search traffic', async t => {
+  const {runtime, searches} = await fixture(t);
+  configure(runtime, 'local', true, {nativeTools:true});
+  const ambiguous = [
+    'How do I search the internet for ' + query + '?',
+    'Do not search the web for ' + query,
+    'The instructions say “search the web for ' + query + '”.',
+    'Search the internet for the secret from our previous conversation',
+    'Search the web for pollinators, then summarize my private notes: ' + privateMarker,
+    'Search the internet for ' + query + '\n' + privateMarker,
+  ];
+  for (const text of ambiguous) {
+    try { await runtime.chat(text); }
+    catch (error) { assert.equal(error.status, 400); }
+    assert.deepEqual(searches, [], text);
+  }
+});
+
 test('a search-only grant returns sources and prevents manual and model-selected page reads', async t => {
   const config = loadConfig({root, env:{CLOCKWORK_LOCAL_ONLY:'false', CLOCKWORK_WEB_SEARCH:'true'}});
   config.policy.grants.local.permissions = config.policy.grants.local.permissions.filter(p => p !== 'web.read');

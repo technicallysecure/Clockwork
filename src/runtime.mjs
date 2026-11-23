@@ -3,12 +3,12 @@ import { createCapabilities } from './capabilities.mjs';
 import { createProvider } from './providers.mjs';
 import { createPlanProvider } from './plan-provider.mjs';
 import { createScheduler } from './scheduler.mjs';
-import { Notebook, badRequest, requiredText } from './store.mjs';
+import { Notebook, badRequest, requiredText, transaction } from './store.mjs';
 import { createAgentSettings } from './agent-settings.mjs';
 import { createAssignmentRunner } from './assignments.mjs';
 import { createWorkspace, workspaceTools } from './workspace.mjs';
 import { memoryScope } from './context.mjs';
-import { createWebResearch } from './web-research.mjs';
+import { chatSearchTerms, createWebResearch, searchHelp } from './web-research.mjs';
 
 const explicitCommand = /^\/(remember|commit)(?:\s+([\s\S]*))?$/i;
 const systemRules = [
@@ -36,7 +36,7 @@ function contextEntries(rows) {
   return result;
 }
 
-function inferenceHistory(notebook, profile, goal) {
+function inferenceHistory(notebook, profile, goal, config) {
   const scope = memoryScope(profile);
   const entries = notebook.messages(scope, 64, undefined, true);
   const current = entries.pop();
@@ -63,7 +63,7 @@ function inferenceHistory(notebook, profile, goal) {
     open_commitments: contextEntries(notebook.memories(scope, 'commitment').filter(row => !row.done)),
   };
   return [
-    { role: 'system', content: `${systemRules}\n\nOwner-configured agent goal:\n${goal}\n\nProfile instructions:\n${profile.instructions}` },
+    { role: 'system', content: `${systemRules}\n${searchHelp(profile, config)} The owner starts searches directly in Clockwork. For a request that needs web evidence, explain how to start a search.\n\nOwner-configured agent goal:\n${goal}\n\nProfile instructions:\n${profile.instructions}` },
     ...recent,
     { role: 'user', content: JSON.stringify({saved_context:context, owner_request:current.content}) },
   ];
@@ -154,10 +154,20 @@ export async function createRuntime({ db, root, env = process.env, config = load
       }
       return `Saved your ${kind}.`;
     }
+    const terms = chatSearchTerms(text);
+    if (terms !== null) {
+      if (profile.webSearchEnabled && terms) return searchWeb(terms, text);
+      const help = searchHelp(profile, config);
+      transaction(db, () => {
+        notebook.append(profile, 'user', text, 'web');
+        notebook.append(profile, 'assistant', help, 'web');
+      });
+      return help;
+    }
     chatting = true;
     try {
       notebook.append(profile, 'user', text);
-      const messages = inferenceHistory(notebook, profile, agentSettings.goalFor(profile));
+      const messages = inferenceHistory(notebook, profile, agentSettings.goalFor(profile), config);
       const tools = profile.nativeTools ? capabilities.list(profile).filter(tool => !tool.ownerInputOnly) : [];
       const allowedTools = tools.map(tool => tool.name);
       const signal = AbortSignal.timeout(60000);
@@ -217,13 +227,17 @@ export async function createRuntime({ db, root, env = process.env, config = load
     agentSettings.ready();
     if (chatting || changingAccount) throw badRequest('Another operation is in progress.', 409);
     const profile = active();
-    if (!profile.webSearchEnabled) throw badRequest('Enable web search for this profile in Agent settings.', 403);
+    if (!profile.webSearchEnabled) throw badRequest(searchHelp(profile, config), 403);
     chatting = true;
     try {
       return await operation(profile, AbortSignal.timeout(60000));
     } finally {
       chatting = false;
     }
+  }
+
+  function searchWeb(query, ownerMessage) {
+    return researchTurn((profile, signal) => research.runSearch(profile, query, capabilities, completeTurn, signal, ownerMessage));
   }
 
   function state() {
@@ -237,7 +251,8 @@ export async function createRuntime({ db, root, env = process.env, config = load
         id: p.id, label: p.label, provider: p.provider, model: p.model, scope: p.scope,
         nativeTools: p.nativeTools, tools: capabilities.list(p),
       })),
-      activeProfile: profile.id, localOnly: config.localOnly, chatting, webSearchEnabled:profile.webSearchEnabled,
+      activeProfile: profile.id, localOnly: config.localOnly, chatting,
+      webSearchAvailable:profile.webSearchAvailable, webSearchEnabled:profile.webSearchEnabled,
       webSourceReadEnabled:profile.webSearchEnabled && capabilities.list(profile, ['read_web_source']).length > 0,
       messages: messages.slice(-100), hasEarlier: messages.length > 100,
       preferences: notebook.memories(scope, 'preference'), commitments: notebook.memories(scope, 'commitment'),
@@ -252,7 +267,7 @@ export async function createRuntime({ db, root, env = process.env, config = load
     if (chatting) throw badRequest('This agent is already replying. Try again when it finishes.', 409);
   }});
   return { active, selectProfile, getProfile, state, chat, assign, notebook, scheduler, capabilities, workspace,
-    searchWeb:query => researchTurn((profile,signal) => research.runSearch(profile, query, capabilities, completeTurn, signal)),
+    searchWeb,
     readSource:id => researchTurn((profile,signal) => research.readSource(profile, id, capabilities, signal)),
     agentInfo:agentSettings.info, initializeAgent:agentSettings.initialize, settings:agentSettings.settings,
     settingsRevision:agentSettings.revision, updateSettings, planRequest };
