@@ -79,6 +79,53 @@ test('text waits for completed inference and uses only supported fields in a sta
     input:[chat[1]], store:false, stream:true});
 });
 
+test('a fragmented plan event stream with a missing or generic media type completes in one request', async () => {
+  for (const mediaType of [null, 'text/plain; charset=utf-8', 'application/octet-stream']) {
+    const {plan, requests} = harness(() => {
+      const response = sse(delta('draft'), completed([message('réussi')]));
+      if (mediaType) response.headers.set('content-type', mediaType);
+      else response.headers.delete('content-type');
+      return response;
+    });
+    assert.deepEqual(await plan.complete(profile, chat), {text:'réussi', calls:[]});
+    assert.deepEqual(requests.map(request => request.method), ['GET', 'POST']);
+  }
+});
+
+test('an ambiguous response must contain a complete SSE exchange before releasing any text or tool calls', async () => {
+  const fakeFrame = 'data: ' + JSON.stringify(completed([call])) + '\n\n';
+  const partial = sse(delta('unfinished'), {type:'response.output_item.done', item:call});
+  partial.headers.delete('content-type');
+  for (const [reply, expected] of [
+    [() => partial, /interrupted/],
+    [() => Response.json(completed([call])), /stream/i],
+    [() => new Response(JSON.stringify(completed([call])), {headers:{'content-type':'text/plain'}}), /stream/i],
+    [() => new Response('<html>untrusted body\n' + fakeFrame + '</html>', {headers:{'content-type':'text/plain'}}), /stream/i],
+    [() => new Response(fakeFrame, {headers:{'content-type':'text/html'}}), /stream/i]
+  ]) {
+    const {plan, requests} = harness(reply);
+    await assert.rejects(plan.complete(profile, chat, [estimate]), error => {
+      assert.equal(error.status, 502);
+      assert.match(error.message, expected);
+      assert.doesNotMatch(error.message, /unfinished|untrusted body|call_1/);
+      return true;
+    });
+    assert.deepEqual(requests.map(request => request.method), ['GET', 'POST']);
+  }
+});
+
+test('HTTP 200 with a documented plan error in JSON reports the error without echoing the body or retrying', async () => {
+  const {plan, requests} = harness(() => Response.json({error:{
+    code:'subscription_sharing_usage_limit_exceeded', message:'echoed private input'
+  }}));
+  await assert.rejects(plan.complete(profile, chat), error => {
+    assert.match(error.message, /limit was reached/);
+    assert.doesNotMatch(error.message, /echoed private input/);
+    return true;
+  });
+  assert.deepEqual(requests.map(request => request.method), ['GET', 'POST']);
+});
+
 test('one validated read tool round trip replays reasoning and matches function output by call_id', async t => {
   const db = openStore(':memory:');
   t.after(() => db.close());
