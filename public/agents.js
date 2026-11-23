@@ -7,6 +7,9 @@ let agentEpoch = 0;
 let slotToCreate = null;
 let loadedSettings = null;
 let settingsVersion = 0;
+let planVersion = 0;
+let planStatus = null;
+let waitingForSignIn = null;
 let filesVersion = 0;
 let fileRequest = 0;
 let editingFile = null;
@@ -63,6 +66,8 @@ function clearAgentState() {
   fileRequest++;
   state = null;
   loadedSettings = null;
+  waitingForSignIn = null;
+  resetPlan();
   editingMemory = null;
   editingFile = null;
   jobProfile = null;
@@ -285,10 +290,12 @@ $('#dispatch-form').addEventListener('submit', async event => {
   }
 });
 
-async function loadSettings() {
+async function loadSettings(preferredId) {
+  if (typeof preferredId !== 'string') preferredId = undefined;
   const version = ++settingsVersion;
   const epoch = agentEpoch;
   loadedSettings = null;
+  resetPlan();
   $('#settings-form').hidden = true;
   $('#settings-credential').value = '';
   $('#settings-status').textContent = 'Loading settings…';
@@ -298,9 +305,8 @@ async function loadSettings() {
     if (settings.agent.id !== selectedAgent) throw new Error('Agent identity mismatch.');
     loadedSettings = settings;
     $('#settings-name').value = settings.agent.name;
-    $('#settings-goal').value = settings.agent.goal;
     $('#settings-profile').replaceChildren(...settings.profiles.map(p => new Option(p.label + ' · ' + providerLabel(p.provider), p.id)));
-    $('#settings-profile').value = settings.activeProfile;
+    $('#settings-profile').value = settings.profiles.some(p => p.id === preferredId) ? preferredId : settings.activeProfile;
     $('#settings-policy').textContent = settings.localOnly ? 'This worker is configured for local-only inference.' : '';
     settingsProfileChanged();
     showError($('#settings-error'), '');
@@ -315,12 +321,178 @@ function settingsProfile() { return loadedSettings?.profiles.find(p => p.id === 
 function settingsProfileChanged() {
   const profile = settingsProfile();
   if (!profile) return;
+  resetPlan();
+  const plan = profile.provider === 'chatgpt-plan';
+  $('#settings-goal').value = profile.goal;
+  $('#plan-connection').hidden = !plan;
+  $('#plan-model-field').hidden = !plan;
+  $('#model-field').hidden = plan;
+  $('#url-field').hidden = plan;
+  $('#credential-field').hidden = plan;
+  $('#settings-model').disabled = plan;
+  $('#settings-url').disabled = plan;
+  $('#plan-model').required = plan;
   $('#settings-model').value = profile.model;
   $('#settings-url').value = profile.baseUrl;
   $('#settings-tools').checked = profile.nativeTools;
   $('#credential-mode').value = 'keep';
   credentialChanged();
+  if (plan) loadPlan();
 }
+
+function contextDescription(profile) {
+  if (profile.provider === 'lmstudio') return 'LM Studio uses this agent’s local conversation, goal, and memory.';
+  if (profile.provider === 'chatgpt-plan') return 'Requests use the selected ChatGPT account and workspace’s separate conversation, goal, and memory. Local-only records stay on this worker.';
+  return 'The billed API uses its own conversation, goal, and memory. Local-only records stay on this worker.';
+}
+
+function resetPlan() {
+  planVersion++;
+  planStatus = null;
+  $('#plan-account').replaceChildren();
+  $('#plan-model').replaceChildren(new Option('Choose a model…', ''));
+  $('#plan-model').disabled = true;
+  $('#plan-status').textContent = '';
+  $('#plan-permissions').textContent = '';
+  $('#plan-controls').hidden = true;
+  setBusy($('#plan-controls'), false);
+  $('#plan-account-field').hidden = true;
+  $('#plan-browser').hidden = true;
+  $('#plan-browser').removeAttribute('href');
+  showError($('#plan-error'), '');
+}
+
+function viewingPlan(version) {
+  return version === planVersion && view === 'settings' && settingsProfile()?.provider === 'chatgpt-plan';
+}
+
+function renderPlanStatus(status, settings) {
+  planStatus = status;
+  const account = status.accounts.find(a => a.id === status.activeId);
+  const rejected = status.lastIssue?.kind === 'access';
+  const options = status.accounts.map(a => new Option(a.label, a.id));
+  $('#plan-account').replaceChildren(...options);
+  $('#plan-account').value = status.activeId || '';
+  $('#plan-account-field').hidden = !options.length;
+  $('#plan-account').disabled = options.length < 2;
+  $('#plan-controls').hidden = false;
+  $('#plan-connect').hidden = status.planEnabled && !rejected;
+  $('#plan-connect').textContent = rejected ? 'Reconnect with ChatGPT' : account?.connected ? 'Enable plan usage' : account ? 'Reconnect with ChatGPT' : 'Continue with ChatGPT';
+  $('#plan-add').hidden = !options.length;
+  $('#plan-renew').hidden = !account?.renewable;
+  $('#plan-signout').hidden = !account?.connected;
+  $('#plan-status').textContent = rejected ? 'The current ChatGPT credential was rejected. Renew access or reconnect.' : status.planEnabled ? 'Plan permission granted.' : status.connected
+    ? 'Identity verified. Enable plan usage to send a request.' : account ? 'Signed out. Reconnect to use this account.' : 'Connect a ChatGPT account to choose a model.';
+  $('#plan-permissions').textContent = account?.connected ? 'Granted permissions · ' + account.scopes.join(', ') : '';
+  if (status.lastIssue) showError($('#plan-error'), status.lastIssue.message);
+  if (waitingForSignIn && settings.revision !== waitingForSignIn.revision) {
+    waitingForSignIn = null;
+    if (status.planEnabled && !rejected && !localStorage.getItem('clockwork-plan-welcome')) {
+      localStorage.setItem('clockwork-plan-welcome', '1');
+      $('#plan-welcome').showModal();
+    }
+  }
+}
+
+async function loadPlan() {
+  resetPlan();
+  const version = planVersion;
+  const settings = loadedSettings;
+  const profile = settingsProfile();
+  $('#plan-status').textContent = 'Checking connection…';
+  try {
+    const status = await api('/plan/status');
+    if (!viewingPlan(version)) return;
+    renderPlanStatus(status, settings);
+    if (!status.planEnabled || status.lastIssue?.kind === 'access') return;
+    const {models} = await api('/plan/models', {method:'POST', body:{}, profile:settings.activeProfile, revision:settings.revision});
+    if (!viewingPlan(version)) return;
+    $('#plan-model').replaceChildren(new Option(models.length ? 'Choose a model…' : 'No eligible models', ''),
+      ...models.map(m => new Option(m.display_name + ' · ' + m.slug, m.slug)));
+    $('#plan-model').value = models.some(m => m.slug === profile.model) ? profile.model : '';
+    $('#plan-model').disabled = !models.length;
+  } catch (error) {
+    if (!viewingPlan(version)) return;
+    if (!planStatus) $('#plan-status').textContent = 'Connection unavailable.';
+    else {
+      // Model discovery can be the first request to observe a revoked grant.
+      const latest = await api('/plan/status').catch(() => null);
+      if (!viewingPlan(version)) return;
+      if (latest) renderPlanStatus(latest, settings);
+    }
+    const setup = !planStatus && error.status === 403 ? ' Enable the ChatGPT plan Compose configuration for this worker.' : '';
+    showError($('#plan-error'), error.message + setup);
+  }
+}
+
+async function startPlan(newAccount) {
+  if (!planStatus) return;
+  const version = planVersion;
+  const settings = loadedSettings;
+  const accountId = newAccount ? null : planStatus.activeId;
+  const popup = window.open('about:blank', '_blank');
+  if (popup) popup.opener = null;
+  const controls = $('#plan-controls');
+  setBusy(controls, true);
+  showError($('#plan-error'), '');
+  try {
+    const result = await api('/plan/start', {method:'POST', profile:settings.activeProfile, revision:settings.revision,
+      body:accountId ? {accountId, consent:planStatus.connected && !planStatus.planEnabled} : {}});
+    if (!viewingPlan(version)) { popup?.close(); return; }
+    const url = new URL(result.url);
+    if (url.origin !== 'https://auth.openai.com' || url.pathname !== '/api/accounts/authorize' || url.username || url.password) {
+      throw new Error('Clockwork returned an invalid ChatGPT sign-in destination.');
+    }
+    waitingForSignIn = {revision:settings.revision};
+    if (popup && !popup.closed) popup.location.replace(url.href);
+    else {
+      $('#plan-browser').href = url.href;
+      $('#plan-browser').hidden = false;
+    }
+    $('#plan-status').textContent = 'Finish sign-in in your browser, then return here to choose a model.';
+  } catch (error) {
+    popup?.close();
+    if (viewingPlan(version)) showError($('#plan-error'), error.message);
+  } finally { if (viewingPlan(version)) setBusy(controls, false); }
+}
+
+async function changePlan(action, accountId) {
+  const settings = loadedSettings;
+  const profileId = settingsProfile().id;
+  const epoch = agentEpoch;
+  const sameWorker = () => epoch === agentEpoch && view === 'settings';
+  resetPlan();
+  $('#plan-status').textContent = 'Updating the ChatGPT connection…';
+  let feedback;
+  try {
+    const result = await api('/plan/' + action, {method:'POST', body:{accountId}, profile:settings.activeProfile, revision:settings.revision});
+    if (action === 'signout') feedback = result.revocationConfirmed ? 'Signed out of ChatGPT.' : 'Local access removed. Review app access in ChatGPT settings.';
+    if (action === 'renew') feedback = 'ChatGPT access renewed.';
+  } catch (error) { feedback = error.message; }
+  if (!sameWorker()) return;
+  await refresh();
+  if (!sameWorker()) return;
+  if ($('#settings-profile').value === profileId) await loadSettings(profileId);
+  if (sameWorker() && feedback) notice(feedback);
+}
+
+$('#plan-connect').addEventListener('click', () => startPlan(false));
+$('#plan-add').addEventListener('click', () => startPlan(true));
+$('#plan-model').addEventListener('change', () => { $('#settings-tools').checked = false; });
+$('#plan-account').addEventListener('change', () => changePlan('select', $('#plan-account').value));
+$('#plan-renew').addEventListener('click', () => changePlan('renew', planStatus.activeId));
+$('#plan-signout').addEventListener('click', () => {
+  const id = planStatus.activeId;
+  const version = planVersion;
+  confirmAction('Sign out of ChatGPT?', 'Disconnect this account and workspace from this agent. You can reconnect the saved registration later.', 'Sign out', true,
+    async dialog => { dialog.close(); if (viewingPlan(version)) await changePlan('signout', id); });
+});
+$('#plan-refresh').addEventListener('click', async () => {
+  const epoch = agentEpoch;
+  const id = settingsProfile()?.id;
+  await refresh();
+  if (epoch === agentEpoch && view === 'settings' && $('#settings-profile').value === id) await loadSettings(id);
+});
 function credentialChanged() {
   const mode = $('#credential-mode').value;
   const profile = settingsProfile();
@@ -345,17 +517,18 @@ $('#settings-form').addEventListener('submit', event => {
   const original = loadedSettings;
   const epoch = agentEpoch;
   const profile = settingsProfile();
+  const plan = profile.provider === 'chatgpt-plan';
+  if (plan && (!planStatus?.planEnabled || !$('#plan-model').value)) return showError($('#settings-error'), 'Connect an account with plan usage and choose an eligible model.');
   const body = {revision:original.revision, profileId:profile.id,
-    name:$('#settings-name').value.trim(), goal:$('#settings-goal').value.trim(), model:$('#settings-model').value.trim(),
-    baseUrl:$('#settings-url').value.trim(), nativeTools:$('#settings-tools').checked};
+    name:$('#settings-name').value.trim(), goal:$('#settings-goal').value.trim(), model:plan ? $('#plan-model').value : $('#settings-model').value.trim(),
+    baseUrl:plan ? profile.baseUrl : $('#settings-url').value.trim(), nativeTools:$('#settings-tools').checked};
   const mode = $('#credential-mode').value;
   const endpoint = URL.parse(body.baseUrl);
   if (!endpoint || !['http:','https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
     return showError($('#settings-error'), 'Enter an HTTP or HTTPS endpoint without credentials, a query or a fragment.');
   }
-  if (mode !== 'keep') body.credential = mode === 'clear' ? '' : $('#settings-credential').value;
-  const copy = 'Save settings for ' + body.name + '. Future turns in the ' + profile.scope + ' scope send conversation history and saved memory to ' +
-    providerLabel(profile.provider) + ' (' + body.model + ') at ' + body.baseUrl + '.' +
+  if (!plan && mode !== 'keep') body.credential = mode === 'clear' ? '' : $('#settings-credential').value;
+  const copy = 'Save settings for ' + body.name + ' and use ' + providerLabel(profile.provider) + ' (' + body.model + ') at ' + body.baseUrl + '. ' + contextDescription(profile) +
     (mode === 'keep' ? '' : '\n\n' + (mode === 'clear' ? 'Clear' : 'Replace') + ' the credential for that destination.');
   confirmAction('Apply agent settings?', copy, 'Save settings', false, async dialog => {
     if (epoch !== agentEpoch || loadedSettings !== original) return;
@@ -393,7 +566,8 @@ async function openFile(name) {
   const revision = state.settingsRevision;
   try {
     const file = name ? await api('/workspace/' + encodeURIComponent(name)) : {name:'', text:'', version:null};
-    if (version !== fileRequest || epoch !== agentEpoch || view !== 'files') return;
+    if (version !== fileRequest || epoch !== agentEpoch || view !== 'files' ||
+        state?.activeProfile !== profile || state.settingsRevision !== revision) return;
     editingFile = {name, version:file.version, profile, revision};
     $('#file-title').textContent = name ? 'Edit workspace file' : 'New workspace file';
     $('#file-name').value = file.name;

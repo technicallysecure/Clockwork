@@ -14,7 +14,7 @@ docker compose up -d --build --wait
 Get-Content -Raw .\.secrets\owner_password
 ```
 
-Open [Clockwork on Core‑2](http://127.0.0.1:8787) and sign in with that password. The app starts in **local-only mode**. You can save memory, approve schedules and inspect runs immediately. For conversational replies, configure one of the providers below. Keep Core‑2 awake and Docker Desktop running for timely follow-ups. Set Docker Desktop to start at sign-in if you want it to resume automatically after a Windows reboot.
+Open [Clockwork on Core‑2](http://127.0.0.1:12002) and sign in with that password. Core‑2 uses `CLOCKWORK_HOST_PORT=12002` in its private `.env`. New installations default to [port 8787](http://127.0.0.1:8787). The app starts in **local-only mode**. You can save memory, approve schedules and inspect runs immediately. For conversational replies, configure one of the providers below. Keep Core‑2 awake and Docker Desktop running for timely follow-ups.
 
 ## Work with multiple agents
 
@@ -38,9 +38,11 @@ docker compose exec clockwork node -e "fetch(process.env.CLOCKWORK_LM_BASE_URL+'
 
 ### Enable hosted inference
 
-The deployment's local-only setting is an operator control. To permit hosted profiles, set `CLOCKWORK_LOCAL_ONLY=false` in `.env` and run `docker compose up -d --wait`. In the chosen agent's **Agent settings**, select **General · Hosted**, enter the model ID and an OpenAI credential, and confirm. The next chat includes recent conversation and saved context from that agent's active scope. Switching back to **General · Local** keeps its conversation and schedules.
+The deployment's local-only setting is an operator control. To permit API-key inference, set `CLOCKWORK_LOCAL_ONLY=false` in `.env` and run `docker compose up -d --build --wait`. In **Agent settings**, select **General · Hosted**, enter the model ID and an OpenAI API key, and confirm. Switching to a hosted provider opens its own history, memory and workspace. Switch back to **General · Local** for the original history and files.
 
 The hosted adapter defaults to `gpt-4.1-mini`. A different `CLOCKWORK_OPENAI_MODEL` defaults to chat-only unless native calls are explicitly enabled for that model. In local-only mode, the runtime omits hosted profiles, rejects hosted dispatch and blocks networked tools. An inference timeout, rejected call or HTTP failure ends that request at the selected provider. The app loads its own browser assets locally. [Provider capabilities and credential handling](docs/extensions.md)
+
+**Use my ChatGPT plan** is a third inference option with its own OAuth registration and protected credential volume. Enable the plan Compose file, sign in, choose an eligible model and verify a streamed response. [Core‑2 setup and manual smoke test](docs/chatgpt-plan.md) · [Architecture decision](docs/0002-plan-provider.md)
 
 ### Secrets and private access
 
@@ -49,7 +51,7 @@ The gateway holds the owner password and one routing token per worker. Web-enter
 The default published address is `127.0.0.1:8787`. Clockwork does not publish an inference port. For another device, use an existing private SSH connection to Core‑2 and open the local end of the tunnel. Example from the client, replacing the username and private hostname:
 
 ```text
-ssh -N -L 127.0.0.1:8877:127.0.0.1:8787 your-user@core-2-private-name
+ssh -N -L 127.0.0.1:8877:127.0.0.1:12002 your-user@core-2-private-name
 ```
 
 Visit [Clockwork through the tunnel](http://127.0.0.1:8877). Keep SSH restricted to your private network or VPN. If you operate a private HTTPS reverse proxy instead, preserve the original Host header and set `CLOCKWORK_SECURE_COOKIE=true`. No router port forwarding is needed for Clockwork or LM Studio.
@@ -57,7 +59,7 @@ Visit [Clockwork through the tunnel](http://127.0.0.1:8877). Keep SSH restricted
 ## Inside each agent
 
 - **Conversation** stores each turn and shows provider failures. Send `/remember Use metric units` or `/commit Review the meeting notes` to explicitly save an entry, even offline. Ordinary model replies can suggest a preference or commitment. Saving it requires owner input.
-- **Memory** lets you add, edit and remove preferences and mark commitments complete or open. Memory and conversation use the profile's scope. Editing memory affects the context supplied on future turns. The transcript retains what was said. The model receives bounded recent context, while you can page through the full transcript.
+- **Memory** lets you add, edit and remove preferences and mark commitments complete or open. Each provider and memory scope has a separate conversation and memory. Plan registrations further separate accounts and workspaces. Older records with unknown or mixed provenance remain available in the local context. You can page through the transcript.
 - **Follow-ups** lets you approve a one-time, daily or weekly reminder or tool check. Choose its first local time, IANA timezone, read tool and arguments, execution budget, and notification condition. A reminder uses its goal as the notification body. A tool check executes its approved read. Pause, resume or cancel jobs here.
 - **Inbox** contains in-app deliveries and approvals. A proposed external action displays its tool, destination and full arguments. The owner approves or rejects that stored operation. Every external effect requires fresh approval in v1. The installed tools only read data or calculate a result.
 

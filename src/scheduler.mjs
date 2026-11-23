@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { createInbox } from './inbox.mjs';
+import { memoryScope } from './context.mjs';
 
 const minute = 60_000;
 const day = 24 * 60 * minute;
@@ -161,6 +162,14 @@ export function createScheduler({
 
   function create(input) {
     const spec = normalize(input);
+    if (spec.tool) {
+      const profile = getProfile(spec.profileId);
+      if (!profile) throw invalid('Unknown profile.');
+      if (profile.provider === 'chatgpt-plan' && !profile.planAccountId) {
+        throw invalid('Connect the ChatGPT workspace before scheduling a read.');
+      }
+      spec.readContext = memoryScope(profile);
+    }
     const requestId = input.requestId;
     if (requestId !== undefined && (typeof requestId !== 'string' ||
         !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(requestId))) {
@@ -172,7 +181,11 @@ export function createScheduler({
         const saved = db.prepare(`SELECT j.* FROM schedule_requests r JOIN scheduled_jobs j ON r.job_id=j.id
           WHERE r.request_id=?`).get(key);
         if (saved) {
-          if (!isDeepStrictEqual(JSON.parse(saved.spec), spec)) throw invalid('That request ID belongs to a different schedule.', 409);
+          const {readContext, ...original} = JSON.parse(saved.spec);
+          const {readContext:current, ...requested} = spec;
+          if (!isDeepStrictEqual(original, requested) || (readContext !== undefined && readContext !== current)) {
+            throw invalid('That request ID belongs to a different schedule or workspace.', 409);
+          }
           return jobView(saved);
         }
       }
@@ -297,6 +310,14 @@ export function createScheduler({
       let data;
       if (spec.tool) {
         const profile = getProfile(spec.profileId);
+        if (spec.readContext === undefined) {
+          // Existing jobs retain access to in-process reads. Legacy arguments
+          // lack provenance, so cannot be passed to a networked tool.
+          const tool = capabilities.validate(profile, spec.tool.name, spec.tool.args, {allowedTools:spec.allowedTools, readOnly:true});
+          if (profile.provider === 'chatgpt-plan' || tool?.network !== false) throw invalid('Review the workspace for this legacy read.', 409);
+        } else if (memoryScope(profile) !== spec.readContext) {
+          throw invalid('The workspace approved for this read changed.', 409);
+        }
         const stopped = new Promise((_, reject) => {
           controller.signal.addEventListener('abort', () => reject(new Error('Read interrupted.')), { once: true });
         });

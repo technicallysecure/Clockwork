@@ -138,6 +138,9 @@ test('model settings stay in the addressed agent and invalidate stale submission
   const saved = await api('/agents/personal/settings', update,{method:'PUT'});
   assert.equal(saved.status,200);
   assert.equal(saved.body.revision,1);
+  assert.equal((await api('/agents/personal/workspace', undefined, {revision:0})).status,409);
+  assert.equal((await api('/agents/personal/workspace', undefined, {revision:1,profile:'focus'})).status,409);
+  assert.equal((await api('/agents/personal/workspace', undefined, {revision:1})).status,200);
   assert.ok(!JSON.stringify(saved.body).includes(update.credential));
   assert.deepEqual((await api('/agents/research/settings')).body, other);
   assert.equal((await api('/agents/personal/preferences',{text:'Stale write'})).status,409);

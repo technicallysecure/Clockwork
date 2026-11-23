@@ -2,6 +2,7 @@ import { badRequest } from './store.mjs';
 import { createWorkspace } from './workspace.mjs';
 import { createWebServer } from './web-server.mjs';
 import { fleetRouter } from './gateway.mjs';
+import { memoryScope } from './context.mjs';
 
 // The worker owns this API and all its state. Its routes never select another agent.
 function agentRoutes(runtime, workspace) {
@@ -17,13 +18,16 @@ function agentRoutes(runtime, workspace) {
     }
     if (method === 'GET' && path === '/state') return runtime.state();
     if (method === 'GET' && path === '/settings') return runtime.settings();
+    if (method === 'POST' && path === '/plan/callback') return runtime.planRequest('callback', body);
     const current = runtime.active();
+    const scope = memoryScope(current);
     if (method === 'GET' && path === '/history') {
       const params = new URLSearchParams(query);
       if (params.get('profile') !== current.id) throw badRequest('Profile changed. Refresh the conversation.', 409);
+      if (revision !== undefined && revision !== String(runtime.settingsRevision())) throw badRequest('Workspace changed. Refresh the conversation.', 409);
       const before = Number(params.get('before'));
       if (!Number.isSafeInteger(before) || before <= 0) throw badRequest('Invalid message cursor.');
-      const messages = runtime.notebook.messages(current.scope, 101, before);
+      const messages = runtime.notebook.messages(scope, 101, before);
       return {messages:messages.slice(-100), hasEarlier:messages.length > 100};
     }
     if (method !== 'GET') {
@@ -31,12 +35,19 @@ function agentRoutes(runtime, workspace) {
         throw badRequest('The agent or its model settings changed. Refresh and review the provider before continuing.', 409);
       }
     }
+    const plan = /^\/plan\/(status|models|start|select|renew|signout)$/.exec(path);
+    if (plan && method === (plan[1] === 'status' ? 'GET' : 'POST')) return runtime.planRequest(plan[1], body);
     const file = /^\/workspace\/([A-Za-z0-9_.-]+)$/.exec(path);
     if (path === '/workspace' || file) {
       if (!workspace) throw badRequest('Workspace storage is unavailable for this worker.', 503);
-      if (method === 'GET' && !file) return workspace.list();
-      if (method === 'GET' && file) return workspace.read(file[1]);
-      if (method === 'PUT' && file) return workspace.write(file[1], body.text, body.version);
+      if (method === 'GET' && (profile !== undefined || revision !== undefined) &&
+          (profile !== current.id || revision !== String(runtime.settingsRevision()))) {
+        throw badRequest('Workspace changed. Refresh the file list.', 409);
+      }
+      const files = workspace.forProfile(current);
+      if (method === 'GET' && !file) return files.list();
+      if (method === 'GET' && file) return files.read(file[1]);
+      if (method === 'PUT' && file) return files.write(file[1], body.text, body.version);
     }
     let match;
     if (method === 'PUT' && path === '/settings') {
@@ -46,13 +57,13 @@ function agentRoutes(runtime, workspace) {
     } else if (method === 'POST' && path === '/chat') {
       await runtime.chat(body.text);
     } else if (method === 'POST' && path === '/preferences') {
-      runtime.notebook.add(current.scope, 'preference', body.text);
+      runtime.notebook.add(scope, 'preference', body.text);
     } else if (method === 'POST' && path === '/commitments') {
-      runtime.notebook.add(current.scope, 'commitment', body.text);
+      runtime.notebook.add(scope, 'commitment', body.text);
     } else if ((match = /^\/(preferences|commitments)\/(\d+)$/.exec(path)) && method === 'PATCH') {
-      runtime.notebook.update(current.scope, match[1] === 'preferences' ? 'preference' : 'commitment', match[2], body);
+      runtime.notebook.update(scope, match[1] === 'preferences' ? 'preference' : 'commitment', match[2], body);
     } else if ((match = /^\/preferences\/(\d+)$/.exec(path)) && method === 'DELETE') {
-      runtime.notebook.removePreference(current.scope, match[1]);
+      runtime.notebook.removePreference(scope, match[1]);
     } else if (method === 'POST' && path === '/jobs') {
       if (body.profileId !== current.id) throw badRequest('Choose the active profile for this follow-up.');
       runtime.scheduler.create(body);
@@ -68,9 +79,9 @@ function agentRoutes(runtime, workspace) {
   };
 }
 
-export function createHttpServer({runtime, root, password, secureCookie, workerToken, workspaceDir}) {
+export function createHttpServer({runtime, root, password, secureCookie, workerToken, workspaceDir, planCallback}) {
   const workspace = runtime.workspace ?? (workspaceDir && createWorkspace(workspaceDir));
   const local = {id:runtime.agentInfo().id, call:agentRoutes(runtime, workspace)};
-  const route = workerToken === undefined ? fleetRouter([local]) : local.call;
+  const route = workerToken === undefined ? fleetRouter([local], planCallback) : local.call;
   return createWebServer({root, password, secureCookie, workerToken, route});
 }

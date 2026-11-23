@@ -38,7 +38,7 @@ export function loadConfig({root = process.cwd(), env = process.env} = {}) {
   for (const file of readdirSync(path.join(configDir, 'profiles')).filter(file => file.endsWith('.json')).sort()) {
     const p = json(path.join(configDir, 'profiles', file));
     if (typeof p.id !== 'string' || !idPattern.test(p.id) || ids.has(p.id) || !boundedText(p.label, 120) ||
-        !boundedText(p.instructions, 12000) || !names(p.tools) || !['lmstudio', 'openai'].includes(p.provider)) {
+        !boundedText(p.instructions, 12000) || !names(p.tools) || !['lmstudio', 'openai', 'chatgpt-plan'].includes(p.provider)) {
       throw new Error('Invalid or duplicate profile in ' + file);
     }
     ids.add(p.id);
@@ -46,14 +46,14 @@ export function loadConfig({root = process.cwd(), env = process.env} = {}) {
     if (!grant || !boundedText(p.scope, 64) || grant.scope !== p.scope || !names(grant.tools) || !names(grant.permissions)) {
       throw new Error('Missing or invalid operator grant for profile ' + p.id);
     }
-    if (localOnly && p.provider === 'openai') continue;
+    if (localOnly && p.provider !== 'lmstudio') continue;
     // Explicit placeholders keep credentials and unrelated environment variables
     // out of profile text and tool metadata.
     if (p.provider === 'lmstudio') {
       if (p.model === '$CLOCKWORK_LM_MODEL') p.model = env.CLOCKWORK_LM_MODEL || 'local-model';
       if (p.baseUrl === '$CLOCKWORK_LM_BASE_URL') p.baseUrl = env.CLOCKWORK_LM_BASE_URL || 'http://host.docker.internal:1234/v1';
       if (p.nativeTools === '$CLOCKWORK_LM_TOOLS') p.nativeTools = bool(env.CLOCKWORK_LM_TOOLS, false);
-    } else {
+    } else if (p.provider === 'openai') {
       if (p.model === '$CLOCKWORK_OPENAI_MODEL') p.model = env.CLOCKWORK_OPENAI_MODEL || 'gpt-4.1-mini';
       if (p.nativeTools === '$CLOCKWORK_OPENAI_TOOLS') p.nativeTools = bool(env.CLOCKWORK_OPENAI_TOOLS, p.model === 'gpt-4.1-mini');
     }

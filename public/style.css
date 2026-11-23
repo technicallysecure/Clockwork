@@ -197,6 +197,14 @@ dialog details { margin-top: .4rem; font-size: .88rem; color: var(--muted); }
 .panel-form { max-width: 40rem; margin-top: 1.3rem; }
 .panel-form > label, .panel-form > div > label { margin-top: .95rem; }
 .panel-form h3 { margin-top: 1.8rem; padding-top: 1.3rem; border-top: 1px solid var(--line); font-size: 1.12rem; }
+.plan-connection { margin: 1rem 0; padding: 1rem; background: #f4f5ef; border: 1px solid var(--line); border-radius: .65rem; }
+.plan-connection h4 { margin: 0 0 .3rem; font-size: 1rem; }
+.plan-connection label, #plan-status, #plan-refresh, #plan-browser { margin-top: .8rem; }
+.plan-connection a, #plan-welcome a, #provider-usage { color: var(--forest); text-underline-offset: .18em; }
+.plan-connection a, #provider-usage { font-size: .86rem; }
+#plan-connect { background: #171717; }
+#plan-browser { display: inline-block; }
+#plan-welcome { padding: 1.4rem; }
 .recipient-set { border: none; padding: 0; margin: 0; }
 .recipient-set legend { font-size: .92rem; font-weight: 600; }
 #recipients { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .45rem; }

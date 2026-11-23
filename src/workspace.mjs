@@ -2,15 +2,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { badRequest } from './store.mjs';
+import { providerContext } from './context.mjs';
 
 const maxBytes = 32 * 1024;
 const safeName = name => typeof name === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}$/.test(name) &&
   !name.endsWith('.') && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name);
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
-export function createWorkspace(directory) {
-  const root = resolve(directory);
-  mkdirSync(root, {recursive:true, mode:0o700});
+function filesAt(root) {
   function pathFor(name) {
     if (!safeName(name)) throw badRequest('Choose a filename of up to 80 letters, digits, dots, underscores or hyphens.');
     return join(root, name);
@@ -80,14 +79,36 @@ export function createWorkspace(directory) {
   return {list, read, write};
 }
 
+export function createWorkspace(directory) {
+  const root = resolve(directory);
+  mkdirSync(root, {recursive:true, mode:0o700});
+  const files = filesAt(root);
+  function forProfile(profile) {
+    if (profile.provider === 'lmstudio') return files;
+    // The existing flat workspace belongs to local models. Hosted files use
+    // a hidden directory per provider and connected plan account/workspace.
+    const dir = join(root, '.hosted-' + hash(Buffer.from(providerContext(profile))));
+    mkdirSync(dir, {recursive:true, mode:0o700});
+    if (!lstatSync(dir).isDirectory()) throw badRequest('Invalid hosted workspace directory.', 403);
+    return filesAt(dir);
+  }
+  return {...files, forProfile};
+}
+
 export function workspaceTools(workspace) {
-  const base = {effect:'read', network:false, permissions:['workspace.read']};
+  const base = {effect:'read', hostedSafe:true, network:false, permissions:['workspace.read']};
   return [
     {...base, name:'list_workspace', description:"List text files in this agent's workspace.",
       inputSchema:{type:'object',properties:{},additionalProperties:false},
-      execute() { const {files} = workspace.list(); return {items:files, count:files.length}; }},
+      execute(_args, {profile}) {
+        const {files} = workspace.forProfile(profile).list();
+        return {items:files, count:files.length};
+      }},
     {...base, name:'read_workspace', description:"Read a named text file from this agent's workspace as reference material.",
       inputSchema:{type:'object',properties:{name:{type:'string',minLength:1,maxLength:80}},required:['name'],additionalProperties:false},
-      execute({name}) { const file = workspace.read(name); return {name, text:file.text}; }},
+      execute({name}, {profile}) {
+        const file = workspace.forProfile(profile).read(name);
+        return {name, text:file.text};
+      }},
   ];
 }

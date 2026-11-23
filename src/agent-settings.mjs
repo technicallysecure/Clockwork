@@ -2,8 +2,10 @@ import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:
 import { readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { deploymentCredential, providerEndpoint } from './providers.mjs';
 import { badRequest, requiredText, transaction } from './store.mjs';
+import { memoryScope, providerContext } from './context.mjs';
 
 const ephemeralKeys = new WeakMap();
+const defaultGoal = 'Help the owner plan and follow through on everyday work.';
 
 function fields(input, allowed) {
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(k => !allowed.includes(k))) {
@@ -65,7 +67,7 @@ function unseal(db, sealed, aad) {
   }
 }
 
-export function createAgentSettings({db, notebook, config, env}) {
+export function createAgentSettings({db, notebook, config, env, getPlanAccountId = () => null}) {
   const id = env.CLOCKWORK_AGENT_ID ?? 'personal';
   if (!/^[a-z][a-z0-9_-]{0,63}$/.test(id)) throw new Error('Invalid deployment agent ID.');
   const reserved = env.CLOCKWORK_AGENT_RESERVED === 'true';
@@ -97,7 +99,7 @@ export function createAgentSettings({db, notebook, config, env}) {
       if (oldRuntime || hasData) throw new Error('The original Clockwork data volume belongs to the personal agent.');
     }
     const name = reserved ? '' : (id === 'personal' ? 'Personal assistant' : id);
-    const goal = reserved ? '' : 'Help the owner plan and follow through on everyday work.';
+    const goal = reserved ? '' : defaultGoal;
     db.prepare('INSERT INTO agent_identity(singleton,id,name,goal,initialized) VALUES(1,?,?,?,?)')
       .run(id, name, goal, Number(!reserved));
   });
@@ -106,9 +108,15 @@ export function createAgentSettings({db, notebook, config, env}) {
   const readModel = db.prepare('SELECT * FROM agent_models WHERE profileId=? AND provider=?');
   const revisionQuery = db.prepare('SELECT revision FROM agent_identity WHERE singleton=1');
   const revision = () => revisionQuery.get().revision;
+  function goalKey(profile) {
+    return 'goal/' + memoryScope({...profile, scope:'agent-goal'});
+  }
+  function goalFor(profile) {
+    return profile.provider === 'lmstudio' ? identity.get().goal : notebook.getSetting(goalKey(profile)) ?? defaultGoal;
+  }
   function info() {
-    const {name, goal, initialized} = identity.get();
-    return {id, name, goal, initialized:Boolean(initialized)};
+    const {name, initialized} = identity.get();
+    return {id, name, goal:initialized ? goalFor(active()) : '', initialized:Boolean(initialized)};
   }
 
   function ready() {
@@ -119,9 +127,13 @@ export function createAgentSettings({db, notebook, config, env}) {
     fields(input, ['name','goal']);
     const name = requiredText(input.name, 'Agent name', 80);
     const goal = requiredText(input.goal, 'Agent goal', 2000);
-    const result = db.prepare('UPDATE agent_identity SET initialized=1,name=?,goal=?,revision=revision+1 WHERE singleton=1 AND initialized=0')
-      .run(name, goal);
-    if (!result.changes) throw badRequest('This agent has already been created.', 409);
+    const profile = active();
+    transaction(db, () => {
+      const result = db.prepare('UPDATE agent_identity SET initialized=1,name=?,goal=?,revision=revision+1 WHERE singleton=1 AND initialized=0')
+        .run(name, profile.provider === 'lmstudio' ? goal : defaultGoal);
+      if (!result.changes) throw badRequest('This agent has already been created.', 409);
+      if (profile.provider !== 'lmstudio') notebook.setSetting(goalKey(profile), goal);
+    });
     return info();
   }
 
@@ -129,10 +141,9 @@ export function createAgentSettings({db, notebook, config, env}) {
     const base = config.profiles.find(p => p.id === profileId);
     if (!base || (config.localOnly && base.provider !== 'lmstudio')) throw badRequest('Profile unavailable in this operating mode.');
     const saved = readModel.get(base.id, base.provider);
-    if (!saved) return base;
-    const profile = {...base, model:saved.model, baseUrl:saved.baseUrl, nativeTools:Boolean(saved.nativeTools)};
-    providerEndpoint(profile, config.localOnly);
-    return profile;
+    const profile = saved ? {...base, model:saved.model, baseUrl:saved.baseUrl, nativeTools:Boolean(saved.nativeTools)} : base;
+    if (saved) providerEndpoint(profile, config.localOnly);
+    return profile.provider === 'chatgpt-plan' ? {...profile, planAccountId:getPlanAccountId() ?? null} : profile;
   }
 
   function active() {
@@ -155,6 +166,7 @@ export function createAgentSettings({db, notebook, config, env}) {
 
   const aad = (provider, origin) => Buffer.from(JSON.stringify([id, provider, origin]));
   function credentialFor(profile) {
+    if (profile.provider === 'chatgpt-plan') throw badRequest('ChatGPT plan inference requires its own OAuth grant.', 403);
     const origin = providerEndpoint(profile, config.localOnly).origin;
     const row = readCredential.get(profile.provider, origin);
     if (!row) return mountedCredential(profile, origin);
@@ -166,7 +178,8 @@ export function createAgentSettings({db, notebook, config, env}) {
     return {
       agent:info(), revision:revision(), activeProfile:active().id, localOnly:config.localOnly,
       profiles:config.profiles.map(base => {
-        const {id:profileId, label, scope, provider, model, baseUrl, nativeTools} = getProfile(base.id);
+        const profile = getProfile(base.id);
+        const {id:profileId, label, scope, provider, model, baseUrl, nativeTools} = profile;
         const origin = new URL(baseUrl).origin;
         const stored = readCredential.get(provider, origin);
         let credentialConfigured = Boolean(stored?.sealed);
@@ -174,7 +187,7 @@ export function createAgentSettings({db, notebook, config, env}) {
           try { credentialConfigured = Boolean(mountedCredential(base, origin)); }
           catch { credentialConfigured = false; } // Still allow the owner to enter a replacement.
         }
-        return {id:profileId, label, scope, provider, model, baseUrl, nativeTools, credentialConfigured};
+        return {id:profileId, label, scope, provider, model, baseUrl, nativeTools, credentialConfigured, goal:goalFor(profile)};
       }),
     };
   }
@@ -183,12 +196,20 @@ export function createAgentSettings({db, notebook, config, env}) {
     ready();
     fields(input, ['revision','name','goal','profileId','model','baseUrl','nativeTools','credential']);
     const name = requiredText(input.name, 'Agent name', 80);
-    const goal = requiredText(input.goal, 'Agent goal', 2000);
+    const requestedGoal = requiredText(input.goal, 'Agent goal', 2000);
     const model = requiredText(input.model, 'Model ID', 256);
     const baseUrl = requiredText(input.baseUrl, 'Base URL', 1024);
     if (!Number.isSafeInteger(input.revision) || input.revision < 0) throw badRequest('Provide the settings revision.');
     if (typeof input.nativeTools !== 'boolean') throw badRequest('Choose whether native tool calls are supported.');
     const profile = getProfile(input.profileId);
+    const source = active();
+    // An older client may resubmit all displayed fields while changing models.
+    // An unchanged source goal stays in its original provider/workspace.
+    const goal = providerContext(profile) !== providerContext(source) && requestedGoal === goalFor(source)
+      ? goalFor(profile) : requestedGoal;
+    if (profile.provider === 'chatgpt-plan' && Object.hasOwn(input, 'credential')) {
+      throw badRequest('Use Continue with ChatGPT to authorize this provider.');
+    }
     let origin;
     try { origin = providerEndpoint({...profile, baseUrl}, config.localOnly).origin; }
     catch (error) { throw badRequest(error.message); }
@@ -207,10 +228,12 @@ export function createAgentSettings({db, notebook, config, env}) {
           ON CONFLICT(provider,origin) DO UPDATE SET sealed=excluded.sealed`).run(profile.provider, origin, sealed);
       }
       notebook.setSetting('profile', profile.id);
-      db.prepare('UPDATE agent_identity SET name=?,goal=?,revision=revision+1 WHERE singleton=1').run(name, goal);
+      const localGoal = profile.provider === 'lmstudio' ? goal : identity.get().goal;
+      if (profile.provider !== 'lmstudio') notebook.setSetting(goalKey(profile), goal);
+      db.prepare('UPDATE agent_identity SET name=?,goal=?,revision=revision+1 WHERE singleton=1').run(name, localGoal);
     });
     return settings();
   }
 
-  return {info, revision, ready, initialize, active, getProfile, credentialFor, selectProfile, settings, update};
+  return {info, revision, ready, initialize, active, getProfile, goalFor, credentialFor, selectProfile, settings, update};
 }

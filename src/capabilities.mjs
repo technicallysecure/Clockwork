@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { memoryScope } from './context.mjs';
 
 const plain = value => value !== null && typeof value === 'object' &&
   (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
@@ -84,11 +85,11 @@ function publicApproval(row) {
   };
 }
 
-export function createCapabilities({db, config, extensions = [], readCommitments}) {
+export function createCapabilities({db, config, getProfile, extensions = [], readCommitments}) {
   const registry = new Map();
   const commitments = {
     name: 'list_commitments', description: 'Read open commitments explicitly saved to this memory scope.',
-    effect: 'read', network: false, permissions: ['commitments.read'],
+    effect: 'read', hostedSafe: true, network: false, permissions: ['commitments.read'],
     inputSchema: {type: 'object', properties: {}, required: [], additionalProperties: false},
     async execute(_args, {scope}) {
       const items = await readCommitments(scope);
@@ -119,12 +120,17 @@ export function createCapabilities({db, config, extensions = [], readCommitments
     const profile = config.profiles.find(item => item.id === p?.id);
     if (!profile || (config.localOnly && profile.provider !== 'lmstudio') ||
         config.policy.grants[profile.id]?.scope !== profile.scope) throw fail('Profile is unavailable.', 403);
-    return profile;
+    const current = getProfile ? getProfile(profile.id) : profile;
+    if (Object.hasOwn(p, 'planAccountId') && p.planAccountId !== current.planAccountId) {
+      throw fail('The connected ChatGPT account changed. Review the request again.', 409);
+    }
+    return current;
   }
 
   function permitted(profile, tool, allowedTools) {
     const grant = config.policy.grants[profile.id];
-    return profile.tools.includes(tool.name) && grant.tools.includes(tool.name) &&
+    return (profile.provider === 'lmstudio' || tool.hostedSafe === true) &&
+      profile.tools.includes(tool.name) && grant.tools.includes(tool.name) &&
       tool.permissions.every(p => grant.permissions.includes(p)) && !(config.localOnly && tool.network) &&
       (allowedTools === undefined || (Array.isArray(allowedTools) && allowedTools.includes(tool.name)));
   }
@@ -143,7 +149,9 @@ export function createCapabilities({db, config, extensions = [], readCommitments
   async function run(tool, args, profile, signal, destination) {
     signal?.throwIfAborted();
     try {
-      const result = await tool.execute(args, {scope: profile.scope, signal, destination});
+      const result = await tool.execute(args, {scope: memoryScope(profile), profile:{
+        provider:profile.provider, planAccountId:profile.planAccountId,
+      }, signal, destination});
       const serialized = JSON.stringify(result);
       if (typeof serialized !== 'string' || Buffer.byteLength(serialized) > 1024 * 1024) throw fail('Invalid tool result.');
       return JSON.parse(serialized);
@@ -176,7 +184,7 @@ export function createCapabilities({db, config, extensions = [], readCommitments
       const id = randomUUID();
       db.prepare(`INSERT INTO approvals
         (id,profile_id,scope,tool,args,destination,effect,version,status,created_at)
-        VALUES(?,?,?,?,?,?,?,?,'pending',?)`).run(id, profile.id, profile.scope, name, JSON.stringify(input),
+        VALUES(?,?,?,?,?,?,?,?,'pending',?)`).run(id, profile.id, memoryScope(profile), name, JSON.stringify(input),
         destinationOf(tool, input), tool.effect, String(tool.version ?? 1), new Date().toISOString());
       return {approvalRequired: true, approvalId: id};
     },
@@ -196,7 +204,7 @@ export function createCapabilities({db, config, extensions = [], readCommitments
       const args = JSON.parse(row.args);
       validate(profile, row.tool, args);
       const tool = registry.get(row.tool);
-      if (row.scope !== profile.scope || row.effect !== tool.effect || row.version !== String(tool.version ?? 1) ||
+      if (row.scope !== memoryScope(profile) || row.effect !== tool.effect || row.version !== String(tool.version ?? 1) ||
           destinationOf(tool, args) !== row.destination) throw fail('The proposed action has changed.', 409);
       // Consume before execution. A crash across the external boundary requires
       // owner reconciliation; replay could issue the same action twice.

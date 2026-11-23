@@ -75,7 +75,7 @@
     <main class="main">
       <header class="topbar">
         <div class="title-line"><button id="open-nav" class="icon-button mobile-only" aria-label="Open navigation" aria-controls="rail" aria-expanded="false"><svg class="icon"><use href="#i-menu"/></svg></button><div class="view-title"><p id="current-agent" class="meta"></p><h1 id="view-heading" tabindex="-1">Conversation</h1></div></div>
-        <div class="provider"><svg class="icon"><use href="#i-cpu"/></svg><div><strong id="provider-name"></strong><span id="provider-model"></span></div></div>
+        <div class="provider"><svg class="icon"><use href="#i-cpu"/></svg><div><strong id="provider-name"></strong><span id="provider-model"></span><a id="provider-usage" href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener noreferrer" hidden>Manage usage</a></div></div>
       </header>
       <div id="notice" class="notice" role="alert" hidden><span id="notice-text"></span><button id="dismiss-notice" class="icon-button" aria-label="Dismiss message"><svg class="icon"><use href="#i-close"/></svg></button></div>
       <section id="view-chat" class="chat-view" aria-label="Conversation">
@@ -144,18 +144,41 @@
           <h3>Model configuration</h3>
           <label for="settings-profile">Inference profile</label><select id="settings-profile"></select>
           <small id="settings-policy"></small>
-          <label for="settings-model">Model ID</label><input id="settings-model" maxlength="256" required spellcheck="false">
-          <label for="settings-url">API base URL</label><input id="settings-url" type="url" maxlength="1024" required spellcheck="false">
+          <section id="plan-connection" class="plan-connection" aria-label="ChatGPT connection" hidden>
+            <h4>ChatGPT connection</h4>
+            <p class="meta">Eligible requests use this account’s ChatGPT plan or credits.</p>
+            <p id="plan-status" role="status"></p>
+            <div id="plan-account-field" hidden><label for="plan-account">Account and workspace</label><select id="plan-account"></select></div>
+            <small id="plan-permissions"></small>
+            <div class="row-actions" id="plan-controls">
+              <button type="button" id="plan-connect" class="primary" data-oai-siwc-button>Continue with ChatGPT</button>
+              <button type="button" id="plan-add" class="secondary" hidden>Add another account</button>
+              <button type="button" id="plan-renew" class="secondary" hidden>Renew access</button>
+              <button type="button" id="plan-signout" class="secondary" hidden>Sign out of ChatGPT</button>
+              <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener noreferrer">Manage usage</a>
+            </div>
+            <a id="plan-browser" target="_blank" rel="noopener noreferrer" hidden>Open ChatGPT sign-in</a>
+            <p class="error" id="plan-error" role="alert" hidden></p>
+          </section>
+          <div id="plan-model-field" hidden><label for="plan-model">Eligible plan model</label><select id="plan-model"></select>
+            <button id="plan-refresh" type="button" class="secondary">Refresh connection and models</button></div>
+          <div id="model-field"><label for="settings-model">Model ID</label><input id="settings-model" maxlength="256" required spellcheck="false"></div>
+          <div id="url-field"><label for="settings-url">API base URL</label><input id="settings-url" type="url" maxlength="1024" required spellcheck="false"></div>
           <label class="check-line"><input id="settings-tools" type="checkbox"> Enable native tool calling for this model</label>
-          <label for="credential-mode">Provider credential</label><select id="credential-mode"><option value="keep">Use credential for this endpoint</option><option value="replace">Set a new credential</option><option value="clear">Clear credential for this endpoint</option></select>
+          <div id="credential-field"><label for="credential-mode">Provider credential</label><select id="credential-mode"><option value="keep">Use credential for this endpoint</option><option value="replace">Set a new credential</option><option value="clear">Clear credential for this endpoint</option></select>
           <small id="credential-status"></small>
-          <div id="credential-entry" hidden><label for="settings-credential">New credential</label><input id="settings-credential" type="password" maxlength="4096" autocomplete="new-password" spellcheck="false"></div>
+          <div id="credential-entry" hidden><label for="settings-credential">New credential</label><input id="settings-credential" type="password" maxlength="4096" autocomplete="new-password" spellcheck="false"></div></div>
           <p class="error" id="settings-error" role="alert" hidden></p>
           <div class="row-actions"><button class="primary" type="submit">Review changes</button></div>
         </form>
       </div></section>
     </main>
   </div>
+  <dialog id="plan-welcome" aria-labelledby="plan-welcome-title">
+    <div class="dialog-head"><h2 id="plan-welcome-title">Your plan is connected</h2></div>
+    <p>Choosing a plan model uses this account’s ChatGPT allowance for eligible requests. You can review or adjust usage in ChatGPT settings.</p>
+    <div class="dialog-actions"><a href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener noreferrer">Manage usage</a><button type="button" data-close class="primary">Got it</button></div>
+  </dialog>
   <dialog id="new-agent-dialog" aria-labelledby="new-agent-title"><form id="new-agent-form">
     <div class="dialog-head"><h2 id="new-agent-title">Create an agent</h2><button data-close type="button" class="icon-button" aria-label="Close dialog"><svg class="icon"><use href="#i-close"/></svg></button></div>
     <label for="new-agent-name">Agent name</label><input id="new-agent-name" maxlength="80" required>
