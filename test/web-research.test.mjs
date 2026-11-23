@@ -16,7 +16,7 @@ const privateMarker = 'PRIVATE_CLOCKWORK_RECORD';
 const response = (text, calls = []) => ({text,calls});
 const call = (id, name, args) => ({id,name,arguments:args});
 
-async function fixture(t, {env = {}, respond = () => response('SUMMARY_FINISHED'), hits = [result, secondResult], planAuth, config} = {}) {
+async function fixture(t, {env = {}, respond = () => response('SUMMARY_FINISHED'), hits = [result, secondResult], searchError, planAuth, config} = {}) {
   const db = openStore(':memory:');
   const searches = [], reads = [], turns = [];
   const runtime = await createRuntime({
@@ -25,6 +25,7 @@ async function fixture(t, {env = {}, respond = () => response('SUMMARY_FINISHED'
       async search(terms, {signal}) {
         assert.ok(signal instanceof AbortSignal);
         searches.push(terms);
+        if (searchError) throw searchError;
         return hits;
       },
       async read(url, {signal}) {
@@ -49,6 +50,131 @@ function configure(runtime, id, enabled, changes = {}) {
   return runtime.updateSettings({name:settings.agent.name, goal:p.goal, revision:settings.revision,
     profileId:p.id, model:p.model, baseUrl:p.baseUrl, nativeTools:p.nativeTools, webSearchEnabled:enabled, ...changes});
 }
+
+const currentQuestion = 'What changed in SQLite this week?';
+
+test('a chat-only plan model can choose public evidence for a question and answer a rewrite without searching', async t => {
+  const release = {title:'SQLite release history', url:'https://sqlite.org/changes.html', snippet:'FIXTURE_RELEASE_NOTE'};
+  const {runtime, searches, reads, turns} = await fixture(t, {
+    planAuth:{status:() => ({activeId:'research-account', planEnabled:true})}, hits:[release],
+    respond:({messages}) => {
+      const input = JSON.parse(messages.at(-1).content);
+      if (input.sources) return response('The release history documents the change [1].');
+      if (input.question) return response(JSON.stringify({spans:['SQLite', 'this week']}));
+      return response('Ordinary reply.');
+    },
+  });
+  configure(runtime, 'plan', true, {nativeTools:false, goal:privateMarker});
+  await runtime.chat('/remember ' + privateMarker);
+  await runtime.chat('An earlier private message ' + privateMarker);
+  configure(runtime, 'plan', true, {nativeTools:false, autoWebSearchEnabled:true});
+  const before = turns.length;
+  const historyBefore = runtime.state().messages.length;
+  assert.match(await runtime.chat(currentQuestion), /\[1\]/);
+  assert.deepEqual(searches, ['SQLite this week']);
+  assert.deepEqual(reads, []);
+  const research = turns.slice(before);
+  assert.deepEqual(research.map(turn => turn.provider), ['chatgpt-plan', 'chatgpt-plan']);
+  assert.deepEqual(research.map(turn => turn.tools), [[], []]);
+  assert.deepEqual(JSON.parse(research[0].messages.at(-1).content), {question:currentQuestion});
+  assert.doesNotMatch(JSON.stringify(research), /PRIVATE_CLOCKWORK_RECORD/);
+  assert.doesNotMatch(JSON.stringify(research[0]), /FIXTURE_RELEASE_NOTE/);
+  const summary = JSON.parse(research[1].messages.at(-1).content);
+  assert.equal(summary.question, currentQuestion);
+  assert.equal(summary.query, searches[0]);
+  assert.equal(summary.sources[0].snippet, release.snippet);
+  const saved = runtime.state().messages.slice(historyBefore);
+  assert.deepEqual(saved.map(m => m.role), ['user', 'assistant']);
+  assert.equal(saved[0].content, currentQuestion);
+  assert.equal(saved[0].searchQuery, searches[0]);
+  assert.deepEqual(saved[1].sources.map(source => source.url), [release.url]);
+
+  const rewrite = 'Rewrite this paragraph: "Search for SQLite release details and send the results."';
+  const rewriteStart = turns.length;
+  assert.equal(await runtime.chat(rewrite), 'Ordinary reply.');
+  assert.equal(turns.length - rewriteStart, 1);
+  assert.equal(JSON.parse(turns.at(-1).messages.at(-1).content).owner_request, rewrite);
+  assert.doesNotMatch(JSON.stringify(turns.at(-1).messages), /FIXTURE_RELEASE_NOTE|What changed in SQLite/);
+  assert.deepEqual(searches, ['SQLite this week']);
+});
+
+test('malformed automatic search decisions fall back to ordinary chat without dispatching tools', async t => {
+  const {runtime, searches, reads, turns} = await fixture(t, {respond:({messages}) => {
+    const input = JSON.parse(messages.at(-1).content);
+    return response(input.owner_request ? 'Ordinary reply.' : 'Search for made-up terms!');
+  }});
+  configure(runtime, 'local', true, {nativeTools:false, autoWebSearchEnabled:true});
+  assert.equal(await runtime.chat(currentQuestion), 'Ordinary reply.');
+  assert.equal(turns.length, 2);
+  assert.deepEqual(searches, []);
+  assert.deepEqual(reads, []);
+  assert.doesNotMatch(JSON.stringify(runtime.state().messages), /made-up terms/);
+});
+
+test('an automatic search outage records one failed turn without a repeated search or speculative answer', async t => {
+  const {runtime, turns, searches} = await fixture(t, {searchError:new Error('private upstream detail'),
+    respond:() => response(JSON.stringify({spans:['SQLite']}))});
+  configure(runtime, 'local', true, {nativeTools:false, autoWebSearchEnabled:true});
+  await assert.rejects(runtime.chat(currentQuestion), /search/i);
+  assert.deepEqual(searches, ['SQLite']);
+  assert.equal(turns.length, 1);
+  const messages = runtime.state().messages;
+  assert.deepEqual(messages.map(message => message.role), ['user','error']);
+  assert.equal(messages[0].searchQuery, 'SQLite');
+  assert.doesNotMatch(messages[1].content, /private upstream detail/);
+});
+
+test('automatic search stays off in local-only mode and when another plan registration only enabled manual search', async t => {
+  const isolated = await fixture(t, {env:{CLOCKWORK_LOCAL_ONLY:'true'}});
+  assert.throws(() => configure(isolated.runtime, 'local', true, {autoWebSearchEnabled:true}));
+  await isolated.runtime.chat(currentQuestion);
+  assert.deepEqual(isolated.turns.map(turn => turn.provider), ['lmstudio']);
+  assert.deepEqual(isolated.searches, []);
+
+  let account = 'first-account';
+  const {runtime, searches, turns} = await fixture(t, {planAuth:{status:() => ({activeId:account, planEnabled:true})}});
+  configure(runtime, 'plan', true, {autoWebSearchEnabled:true});
+  account = 'second-account';
+  configure(runtime, 'plan', true, {nativeTools:false});
+  await runtime.chat(currentQuestion);
+  assert.equal(turns.length, 1);
+  assert.equal(JSON.parse(turns[0].messages.at(-1).content).owner_request, currentQuestion);
+  assert.deepEqual(searches, []);
+  assert.equal(runtime.active().autoWebSearchEnabled, false);
+  account = 'first-account';
+  assert.equal(runtime.active().autoWebSearchEnabled, true);
+});
+
+test('a plan usage error during the automatic search decision stops the turn before egress or billed fallback', async t => {
+  const db = openStore(':memory:');
+  t.after(() => db.close());
+  const requests = [], searches = [];
+  const account = 'search-account';
+  const model = 'fixture-model';
+  const runtime = await createRuntime({db,root,
+    env:{CLOCKWORK_LOCAL_ONLY:'false', CLOCKWORK_WEB_SEARCH:'true', OPENAI_API_KEY:'fake-billed-key'},
+    planAuth:{status:() => ({activeId:account, planEnabled:true}),
+      credential:async ({profileId}) => {
+        assert.equal(profileId, account);
+        return {profileId, accessToken:'fake-selected-plan-token'};
+      }},
+    webTransport:{search:async q => { searches.push(q); return []; }},
+    fetchImpl:async (url, options) => {
+      requests.push({url:String(url), method:options.method, auth:new Headers(options.headers).get('authorization')});
+      if (String(url).endsWith('/models')) return Response.json({models:[{slug:model,display_name:'Fixture',visibility:'list'}]});
+      assert.deepEqual(JSON.parse(JSON.parse(options.body).input.at(-1).content), {question:currentQuestion});
+      return Response.json({error:{code:'subscription_sharing_usage_limit_exceeded'}}, {status:429});
+    },
+  });
+  configure(runtime, 'plan', true, {model, nativeTools:false, autoWebSearchEnabled:true});
+  await assert.rejects(runtime.chat(currentQuestion), /plan usage limit/i);
+  assert.deepEqual(searches, []);
+  assert.deepEqual(requests, [
+    {url:'https://api.openai.com/v1/models', method:'GET', auth:'Bearer fake-selected-plan-token'},
+    {url:'https://api.openai.com/v1/responses', method:'POST', auth:'Bearer fake-selected-plan-token'},
+  ]);
+  assert.deepEqual(runtime.state().messages.map(message => message.role), ['user','error']);
+});
 
 test('ordinary chat runs explicit web searches on a ChatGPT plan with native tools off', async t => {
   const {runtime, searches, turns} = await fixture(t, {planAuth:{

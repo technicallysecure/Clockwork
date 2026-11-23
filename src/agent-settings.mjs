@@ -148,12 +148,13 @@ export function createAgentSettings({db, notebook, config, env, getPlanAccountId
     const webSearchAvailable = Boolean(config.webSearchAvailable && !config.localOnly &&
       profile.tools.includes('web_search') && grant.tools.includes('web_search') && grant.permissions.includes('web.search'));
     const webSearchEnabled = webSearchAvailable && notebook.getSetting(searchKey(scoped)) === 'true';
-    return {...scoped, webSearchAvailable, webSearchEnabled,
+    const autoWebSearchEnabled = webSearchEnabled && notebook.getSetting(searchKey(scoped, 'auto-web-search')) === 'true';
+    return {...scoped, webSearchAvailable, webSearchEnabled, autoWebSearchEnabled,
       tools:webSearchEnabled ? scoped.tools : scoped.tools.filter(tool => !['web_search','read_web_source'].includes(tool))};
   }
 
-  function searchKey(profile) {
-    return 'web-search/' + profile.id + '/' + memoryScope(profile);
+  function searchKey(profile, setting = 'web-search') {
+    return setting + '/' + profile.id + '/' + memoryScope(profile);
   }
 
   function active() {
@@ -199,14 +200,15 @@ export function createAgentSettings({db, notebook, config, env, getPlanAccountId
           catch { credentialConfigured = false; } // Still allow the owner to enter a replacement.
         }
         return {id:profileId, label, scope, provider, model, baseUrl, nativeTools, credentialConfigured, goal:goalFor(profile),
-          webSearchEnabled:profile.webSearchEnabled, webSearchAvailable:profile.webSearchAvailable};
+          webSearchEnabled:profile.webSearchEnabled, webSearchAvailable:profile.webSearchAvailable,
+          autoWebSearchEnabled:profile.autoWebSearchEnabled};
       }),
     };
   }
 
   function update(input) {
     ready();
-    fields(input, ['revision','name','goal','profileId','model','baseUrl','nativeTools','credential','webSearchEnabled']);
+    fields(input, ['revision','name','goal','profileId','model','baseUrl','nativeTools','credential','webSearchEnabled','autoWebSearchEnabled']);
     const name = requiredText(input.name, 'Agent name', 80);
     const requestedGoal = requiredText(input.goal, 'Agent goal', 2000);
     const model = requiredText(input.model, 'Model ID', 256);
@@ -216,6 +218,12 @@ export function createAgentSettings({db, notebook, config, env, getPlanAccountId
     const profile = getProfile(input.profileId);
     if (Object.hasOwn(input, 'webSearchEnabled') && (typeof input.webSearchEnabled !== 'boolean' ||
         (input.webSearchEnabled && !profile.webSearchAvailable))) throw badRequest('Web search is unavailable for this profile.');
+    if (Object.hasOwn(input, 'autoWebSearchEnabled')) {
+      if (typeof input.autoWebSearchEnabled !== 'boolean') throw badRequest('Choose whether to search automatically during chat.');
+      if (input.autoWebSearchEnabled && !(input.webSearchEnabled ?? profile.webSearchEnabled)) {
+        throw badRequest('Allow web search for this profile before enabling automatic search.');
+      }
+    }
     const source = active();
     // An older client may resubmit all displayed fields while changing models.
     // An unchanged source goal stays in its original provider/workspace.
@@ -243,6 +251,9 @@ export function createAgentSettings({db, notebook, config, env, getPlanAccountId
       }
       notebook.setSetting('profile', profile.id);
       if (Object.hasOwn(input, 'webSearchEnabled')) notebook.setSetting(searchKey(profile), String(input.webSearchEnabled));
+      if (input.webSearchEnabled === false || Object.hasOwn(input, 'autoWebSearchEnabled')) {
+        notebook.setSetting(searchKey(profile, 'auto-web-search'), String(input.autoWebSearchEnabled === true));
+      }
       const localGoal = profile.provider === 'lmstudio' ? goal : identity.get().goal;
       if (profile.provider !== 'lmstudio') notebook.setSetting(goalKey(profile), goal);
       db.prepare('UPDATE agent_identity SET name=?,goal=?,revision=revision+1 WHERE singleton=1').run(name, localGoal);

@@ -124,6 +124,7 @@ small { display: block; margin-top: .28rem; }
 .message-content { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
 .user .message-content { padding: .72rem 1rem; border: 1px solid #e5e0d6; border-radius: .95rem .25rem .95rem .95rem; background: #f1eee6; }
 .message.error-row .message-content { color: #8e3e33; }
+.search-query { max-width: 100%; margin-top: .28rem; overflow-wrap: anywhere; }
 .search-sources { width: 100%; padding-left: 1.7rem; margin: .8rem 0 0; }
 .search-sources li { border-top: 1px solid var(--line); padding: .6rem 0; }
 .source-link { color: var(--forest); overflow-wrap: anywhere; text-underline-offset: .15em; font-weight: 600; }

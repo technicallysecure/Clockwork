@@ -145,11 +145,11 @@ export function createCapabilities({db, config, getProfile, extensions = [], rea
       (allowedTools === undefined || (Array.isArray(allowedTools) && allowedTools.includes(tool.name)));
   }
 
-  function validate(p, name, args, {allowedTools, readOnly = false, ownerInput = false} = {}) {
+  function validate(p, name, args, {allowedTools, readOnly = false, ownerInput = false, inputRule} = {}) {
     const profile = activeProfile(p);
     const tool = registry.get(name);
     if (!tool || !permitted(profile, tool, allowedTools) || (readOnly && tool.effect !== 'read') ||
-        (tool.ownerInputOnly && !ownerInput)) {
+        (tool.ownerInputOnly && ownerInput !== true && inputRule?.(profile, name, args) !== true)) {
       throw fail('Tool unavailable under the current permissions.', 403);
     }
     checkValue(tool.inputSchema, args);

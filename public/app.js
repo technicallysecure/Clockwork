@@ -371,7 +371,9 @@ function renderChat() {
       const key = String(message.id);
       const cached = nodes.get(key);
       const canRead = Boolean(state.webSourceReadEnabled && message.profileId === state.activeProfile);
-      if (cached && cached.dataset.context === context && cached.dataset.canRead === String(canRead)) {
+      const searchLabel = message.role === 'user' && message.searchQuery ? 'Automatic web search · ' + message.searchQuery : '';
+      if (cached && cached.dataset.context === context && cached.dataset.canRead === String(canRead) &&
+          ($('.search-query', cached)?.textContent ?? '') === searchLabel) {
         const content = $('.message-content', cached);
         if (content.textContent !== message.content) content.textContent = message.content;
         return cached;
@@ -387,6 +389,7 @@ function renderChat() {
       const detail = [source && message.role !== 'user' ? source.label : '', dateText(message.createdAt)].filter(Boolean).join(' · ');
       metadata.append(el('strong', '', who), el('span', '', detail));
       article.append(metadata, el('div', 'message-content', message.content));
+      if (searchLabel) article.append(el('p', 'meta search-query', searchLabel));
       if (Array.isArray(message.sources) && message.sources.length) {
         const sources = sourceList(message.sources, canRead, context);
         if (sources.children.length) article.append(sources);
@@ -420,7 +423,8 @@ function renderChat() {
   $('#chat-form').hidden = webSearchMode;
   $('#web-search-form').hidden = !webSearchMode;
   $('.commands').hidden = webSearchMode;
-  $('.composer-hint').hidden = webSearchMode;
+  $('#auto-search-status').hidden = webSearchMode || !state.autoWebSearchEnabled;
+  $('.composer-hint').hidden = webSearchMode || state.autoWebSearchEnabled;
   setBusy($('#web-search-form'), busy);
   $$('.read-source').forEach(button => { button.disabled = busy; });
 }

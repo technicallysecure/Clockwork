@@ -101,7 +101,9 @@
             <p class="meta" id="web-query-help">DuckDuckGo and Mwmbl receive these terms through this agent’s SearXNG service. Clockwork may read a result to answer.</p>
             <div class="query-controls"><input id="web-query" type="search" placeholder="Enter search terms…" autocomplete="off" spellcheck="false" required maxlength="300" aria-describedby="web-query-help"><button type="submit" class="primary">Search web</button></div>
           </form>
-          <div class="composer-foot"><div class="composer-options"><button type="button" id="web-search-toggle" class="secondary" aria-expanded="false" aria-controls="web-search-form" hidden>Web search</button><button type="button" id="web-search-settings" class="secondary" hidden>Enable web search</button><details class="commands"><summary>Chat commands</summary><p><code>/remember</code> followed by a preference saves it to memory. <code>/commit</code> followed by a task records a commitment.<span id="web-command-help" hidden> Type <code>/search</code> or “Search the web for” followed by your public search terms.</span></p></details></div><p class="composer-hint">Enter to send <span>·</span> Shift + Enter for a new line</p></div>
+          <div class="composer-foot"><div class="composer-options"><button type="button" id="web-search-toggle" class="secondary" aria-expanded="false" aria-controls="web-search-form" hidden>Web search</button><button type="button" id="web-search-settings" class="secondary" hidden>Enable web search</button><details class="commands"><summary>Chat commands</summary><p><code>/remember</code> followed by a preference saves it to memory. <code>/commit</code> followed by a task records a commitment.<span id="web-command-help" hidden> Type <code>/search</code> or “Search the web for” followed by your public search terms.</span></p></details></div>
+            <p id="auto-search-status" hidden>Automatic web search on</p><p class="composer-hint">Enter to send <span>·</span> Shift + Enter for a new line</p>
+          </div>
         </div>
       </section>
       <section id="view-memory" class="page" hidden>
@@ -182,6 +184,10 @@
             <label id="settings-search-field" class="check-line"><input id="settings-search" type="checkbox" aria-describedby="settings-search-help settings-search-policy"> Allow web search for this profile</label>
             <small id="settings-search-help">This agent uses SearXNG to send your search terms to DuckDuckGo and Mwmbl. No search API key is required.</small>
             <small id="settings-search-policy" hidden></small>
+          </div>
+          <div>
+            <label class="check-line"><input id="settings-auto-search" type="checkbox" aria-describedby="settings-auto-search-help"> Automatically search during chat</label>
+            <small id="settings-auto-search-help">The selected model may receive an extra request to decide whether your question needs current sources. Search engines receive terms drawn from your current message. This works with native tool calling off.</small>
           </div>
           <p class="error" id="settings-error" role="alert" hidden></p>
           <div class="row-actions"><button class="primary" type="submit">Review changes</button></div>
